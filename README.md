@@ -1,104 +1,157 @@
 # iron-mcp
 
-A **stateless MCP 2.0 server** for Scala 3, built on the official
-[MCP Java SDK](https://github.com/modelcontextprotocol/java-sdk) with
-[Iron](https://github.com/Iltotore/iron) refinement types at the protocol
-boundary and an [http4s](https://http4s.org) transport.
+A **Model Context Protocol server** for Scala 3 — protocol revision
+**2026-07-28**, written from the specification with no Java SDK, no Jackson,
+and no reflection anywhere. Cross-builds to the JVM and **Scala Native**.
 
 ```scala
-val greet = ToolDef(
-  name        = "greet",                       // String :| Match["^[a-zA-Z0-9_-]{1,128}$"]
-  description = "Greet someone, one to ten times.",
-  inputSchema = greetSchema,
-  handler     = (args: Greet) => IO.pure(ToolOutcome.Text(s"Hello, ${args.name}!"))
+val tools = new ToolProvider:
+  def list(params: ListToolsParams): IO[ListToolsResult] = ...
+  def call(params: CallToolParams): IO[CallToolResult | InputRequiredResult] =
+    IO.pure(CallToolResult.text("hello"))
+
+val server = McpServer(
+  info  = Implementation(name = "my-server", version = "0.1.0"),
+  tools = Some(tools)
 )
 
-IronMcpServer.resource(ServerInfo("my-server", "0.1.0"), List(greet)).use { server =>
-  EmberServerBuilder.default[IO].withHttpApp(server.routes.orNotFound).build.useForever
-}
+Stdio.serve(server)
 ```
 
-Your handler receives `Greet`, not a `Json` blob — and `Greet`'s fields carry
-their constraints in their types:
+## Why not the official Java SDK
+
+Two reasons, in order of weight:
+
+1. **It cannot speak the current revision.** MCP Java SDK 2.0.1 implements
+   2025-11-25. The current specification is 2026-07-28, which replaced the
+   `initialize` handshake with `server/discover` and a required `_meta`
+   envelope. Claude Code already negotiates the new revision and falls back to
+   the legacy handshake only when a server gives it no choice.
+2. **Jackson deserializes reflectively**, which rules out Scala Native and
+   forces reachability metadata under GraalVM `native-image`.
+
+Every codec here is a compile-time Circe derivation from a `Mirror`.
+
+## What 2026-07-28 changes
+
+| | 2025-11-25 | 2026-07-28 |
+|---|---|---|
+| Lifecycle | `initialize` handshake, then `notifications/initialized` | `server/discover`, cacheable, no handshake |
+| Version negotiation | in the handshake | required `_meta` envelope on **every** request |
+| Streaming | SSE sessions | `subscriptions/listen` returning a subscription id |
+| Errors | JSON-RPC five | plus `-32020` header mismatch, `-32021` missing client capability, `-32022` unsupported version |
+| Long operations | tasks | `input_required` results |
+
+The revision is stateless by construction, which is why `McpServer.handle` is a
+pure function of one message and holds no per-client state at all.
+
+## Types that do real work
+
+**Iron constraints come from the specification text**, not from taste. The
+`_meta` key grammar — optional dot-separated prefix, alphanumeric-bounded name —
+is a regex in the spec prose and a type here, so a malformed key cannot be
+written in Scala and will not decode off the wire.
 
 ```scala
-type Repeat = Int :| Interval.Closed[1, 10]
-final case class Greet(name: NonEmptyString, times: Repeat) derives Decoder
+type MetaKey   = String :| MetaKeyC
+type ToolName  = String :| Match["^[a-zA-Z0-9_-]{1,128}$"]
+type MetaObject = Map[MetaKey, Json]
 ```
 
-## Why stateless
+**Capabilities are derived from providers.** You do not declare them:
 
-Stateless Streamable HTTP means no session id, no SSE stream, no server-held
-per-client state: one POST carries one JSON-RPC message and gets one response.
-Any replica can serve any request, so the server scales horizontally and
-restarts without dropping anyone's session.
+```scala
+val capabilities = ServerCapabilities(
+  tools     = tools.as(ToolsCapability(...)),
+  resources = resources.as(ResourcesCapability(...)),
+  ...
+)
+```
 
-The SDK's stateless SPI (`McpStatelessServerTransport`) is **two methods wide**,
-which is why this library implements it directly on http4s instead of pulling in
-`jakarta.servlet` and a servlet container for `HttpServletStatelessServerTransport`.
+A server therefore cannot advertise a capability it has no way to serve.
 
-## Two layers of validation, on purpose
+**`input_required` is only reachable where the spec allows it.** The three
+methods that may ask the client for something return a union; nothing else can,
+because no other signature admits it:
 
-| Layer | Enforces | Sees |
-|---|---|---|
-| JSON Schema (SDK, `validateToolInputs(true)`) | what the **model was told** about the tool | ranges, required fields, types |
-| Iron refinements (Circe decoder) | what your **code actually requires** | everything the schema can express, plus what it can't |
+```scala
+def call(params: CallToolParams): IO[CallToolResult | InputRequiredResult]
+def get(params: GetPromptParams): IO[GetPromptResult | InputRequiredResult]
+def read(params: ReadResourceParams): IO[ReadResourceResult | InputRequiredResult]
+```
 
-They are not redundant. A schema can say `maximum: 65535`; it cannot say
-"non-empty after trimming", "a valid tool name", or any predicate you can write
-in Scala. Constraints in both places means the model gets an accurate
-description *and* your handler cannot be reached with a value it doesn't accept.
-
-Either way the rejection arrives as a **tool result with `isError: true`**, never
-a JSON-RPC error — MCP reserves protocol errors for protocol failures, and a
-model can read and correct a tool error:
+**Tool failures are results, not protocol errors.** MCP reserves JSON-RPC errors
+for protocol failures; a tool that fails at its job returns `isError: true` so
+the model can read and correct it. An Iron violation lands there too:
 
 ```json
-{"jsonrpc":"2.0","id":3,"result":{
-  "content":[{"type":"text","text":"Tool (describe_port) input validation failed: [/port: must have a maximum value of 65535]"}],
-  "isError":true}}
+{"id":4,"result":{"content":[{"type":"text","text":"Should be included in [1, 10]"}],"isError":true}}
 ```
+
+## Codecs
+
+Everything derives. Exactly four codecs are hand-written, and only where
+derivation cannot express the shape:
+
+| Type | Why |
+|---|---|
+| `JsonRpcMessage` | discriminated by field *presence*: `id`+`method` is a request, `method` alone a notification, `result` xor `error` a response |
+| `ContentBlock` | union tagged by a `type` field |
+| `ResourceContents` | `text` xor `blob`, never both |
+| `CompletionReference` | `ref/prompt` vs `ref/resource` |
+
+`Wire.encode` applies `deepDropNullValues`: MCP distinguishes an absent optional
+from a null one, and several hosts reject `null` where they expect omission.
 
 ## Layout
 
-| File | Role |
+| Path | Role |
 |---|---|
-| `Refined.scala` | Iron aliases: `ToolName`, `NonEmptyString`, `SemVer`, `Port`, `EndpointPath` |
-| `ToolDef.scala` | A tool whose arguments decode into a refined `A` before your code runs |
-| `Http4sStatelessTransport.scala` | `McpStatelessServerTransport` over http4s; Origin checks, 405 on GET/DELETE |
-| `IronMcpServer.scala` | Assembles tools into an `McpStatelessAsyncServer`, exposes `HttpRoutes[IO]` |
-| `ReactorInterop.scala` | The entire Reactor↔cats-effect bridge: two functions |
-| `demo/` | Two tools and a runnable server on `127.0.0.1:8765` |
+| `protocol/Refined.scala` | Iron aliases lifted from the spec |
+| `protocol/JsonRpc.scala` | envelope, request ids, the nine error codes |
+| `protocol/Meta.scala` | the `_meta` envelope; `protocolVersion` + `clientCapabilities` required |
+| `protocol/{Tools,Resources,Prompts,Completion,Discover,Subscriptions,Notifications}.scala` | the full server surface |
+| `server/Providers.scala` | one trait per capability |
+| `server/McpServer.scala` | dispatch, version checks, capability derivation |
+| `transport/{Wire,Stdio}.scala` | newline-delimited JSON-RPC on stdin/stdout |
 
 ## Running
 
 ```bash
-sbt --client "Test/testFull"   # full protocol suite: handshake, tools, refinement failures
-sbt --client run               # demo server on http://127.0.0.1:8765/mcp
+sbt --client "coreJVM/Test/testFull"   # 17 protocol tests
+sbt --client "demoJVM/run"             # stdio server on the JVM
+sbt --client "demoNative/nativeLink"   # native binary
 ```
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8765/mcp -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"1.0.0"}}}'
+echo '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{
+  "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+  "io.modelcontextprotocol/clientCapabilities":{}}}}' \
+| ./target/out/native0.5/scala-3.8.3/iron-mcp-demo/native/ironmcp.demo.Main
 ```
 
-Verified against MCP Java SDK 2.0.1, which negotiates protocol version
-**2025-11-25**.
+The Native binary is ~17 MB and answers `server/discover` in about 44 ms
+including process spawn — which is the point of avoiding reflection: a local
+harness spawns this per session.
 
-## Notes
+## Build notes
 
-- **Jackson serializes the protocol envelope; Circe serializes your side of it.**
-  The SDK deserializes its own `McpSchema` Java records reflectively, which Circe
-  cannot do generically, so `mcp-json-jackson3` stays. Circe + Iron own tool
-  arguments and results — the only place your types appear.
-- **The demo binds to loopback.** An MCP server with no auth in front of it has
-  no business listening on `0.0.0.0`. `Http4sStatelessTransport` also rejects
-  disallowed `Origin` headers (DNS-rebinding protection) when you supply an
-  allowlist.
+- **sbt 2** with Scala Native. Both plugins publish under the `_sbt2_3` suffix;
+  in sbt 2 cross-built dependencies use plain `%%` — `%%%` and `sbt-platform-deps`
+  are gone.
+- **`LTO.thin` breaks the Native link** with `undefined reference to
+  snFatalErrorPrefix`. Left off.
 
 ## Stack
 
-Scala 3.8.3 · Iron 3.3.1 · MCP Java SDK 2.0.1 · http4s 0.23.32 · cats-effect 3.7.0 · Circe 0.14.15
+Scala 3.8.3 · Iron 3.3.2 · Circe 0.14.16 · cats-effect 3.7.0 · fs2 3.13.0 ·
+Scala Native 0.5.12
+
+## Status
+
+The protocol layer, dispatcher and stdio transport are complete and tested.
+Not yet built: real capability providers (email, web search, computer use) and
+an HTTP transport.
 
 ## License
 
