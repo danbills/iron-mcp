@@ -31,7 +31,15 @@ inThisBuild(
         Some("scm:git:git@github.com:danbills/iron-mcp.git")
       )
     ),
-    versionScheme := Some("early-semver")
+    versionScheme := Some("early-semver"),
+    // sbt 2 uploads to the Sonatype Central Portal itself: `publishSigned`
+    // writes a signed bundle into localStaging, then `sonaUpload` /
+    // `sonaRelease` push it. Credentials come from SONATYPE_USERNAME /
+    // SONATYPE_PASSWORD in the environment.
+    publishTo := {
+      val snapshots = "https://central.sonatype.com/repository/maven-snapshots/"
+      if (isSnapshot.value) Some("central-snapshots".at(snapshots)) else localStaging.value
+    }
   )
 )
 
