@@ -26,7 +26,7 @@ final case class ListPromptsParams(_meta: RequestMeta, cursor: Option[Cursor] = 
 
 final case class ListPromptsResult(
     prompts: List[Prompt],
-    ttlMs: Long,
+    ttlMs: CacheTtlMs,
     cacheScope: CacheScope,
     nextCursor: Option[Cursor] = None,
     resultType: ResultType = ResultType.Complete,

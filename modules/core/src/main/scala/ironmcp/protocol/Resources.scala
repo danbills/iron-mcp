@@ -19,7 +19,7 @@ final case class ListResourcesParams(_meta: RequestMeta, cursor: Option[Cursor] 
 
 final case class ListResourcesResult(
     resources: List[Resource],
-    ttlMs: Long,
+    ttlMs: CacheTtlMs,
     cacheScope: CacheScope,
     nextCursor: Option[Cursor] = None,
     resultType: ResultType = ResultType.Complete,
@@ -28,7 +28,7 @@ final case class ListResourcesResult(
 
 final case class ListResourceTemplatesResult(
     resourceTemplates: List[ResourceTemplate],
-    ttlMs: Long,
+    ttlMs: CacheTtlMs,
     cacheScope: CacheScope,
     nextCursor: Option[Cursor] = None,
     resultType: ResultType = ResultType.Complete,
@@ -44,7 +44,7 @@ final case class ReadResourceParams(
 
 final case class ReadResourceResult(
     contents: List[ResourceContents],
-    ttlMs: Long,
+    ttlMs: CacheTtlMs,
     cacheScope: CacheScope,
     resultType: ResultType = ResultType.Complete,
     _meta: Option[ResultMeta] = None

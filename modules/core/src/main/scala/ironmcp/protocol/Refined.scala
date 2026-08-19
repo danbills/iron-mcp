@@ -43,6 +43,19 @@ type IdNumber = Long
 /** Base64 payloads for binary content blocks. */
 type Base64 = String :| Match["^[A-Za-z0-9+/]*={0,2}$"]
 
+/** A cache TTL is a duration, so it cannot be negative. This is the wire-level
+  * constraint on every `ttlMs` the spec defines.
+  */
+type CacheTtlMsC = GreaterEqual[0L]
+type CacheTtlMs  = Long :| CacheTtlMsC
+
+/** How long a client may cache `server/discover`. Policy, not spec: positive,
+  * and never more than ten minutes — capability changes should become visible
+  * to a running host within one coffee break, not one working day.
+  */
+type DiscoveryTtlMsC = Interval.Closed[1L, 600000L]
+type DiscoveryTtlMs  = Long :| DiscoveryTtlMsC
+
 /** Progress is monotonically increasing per the spec. */
 type Progress = Double :| GreaterEqual[0.0]
 

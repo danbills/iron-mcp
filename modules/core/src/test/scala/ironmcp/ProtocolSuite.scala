@@ -156,4 +156,17 @@ class ProtocolSuite extends CatsEffectSuite:
     assertEquals((RequestId.Text("seven": NonEmptyString): RequestId).asJson.noSpaces, "\"seven\"")
     assertEquals(parser.parse("7").flatMap(_.as[RequestId]), Right(RequestId.Num(7L)))
 
+  test("a negative cache TTL does not decode"):
+    val bad = Json.obj(
+      "tools"      -> Json.arr(),
+      "ttlMs"      -> Json.fromLong(-1L),
+      "cacheScope" -> Json.fromString("private")
+    )
+    assert(bad.as[ListToolsResult].isLeft, "a duration cannot be negative")
+
+  test("a discovery TTL beyond ten minutes is refused"):
+    assert(600001L.refineEither[DiscoveryTtlMsC].isLeft, "ten minutes is the ceiling")
+    assert(0L.refineEither[DiscoveryTtlMsC].isLeft, "a zero TTL would defeat discovery caching")
+    assert(300000L.refineEither[DiscoveryTtlMsC].isRight, "five minutes is the default and must hold")
+
   extension (self: io.circe.JsonObject) private def toJson: Json = Json.fromJsonObject(self)

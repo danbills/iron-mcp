@@ -80,7 +80,7 @@ object CacheScope:
     case other     => Left(s"not a cache scope: $other")
   }
 
-final case class CachePolicy(ttlMs: Long, cacheScope: CacheScope) derives Codec.AsObject
+final case class CachePolicy(ttlMs: CacheTtlMs, cacheScope: CacheScope) derives Codec.AsObject
 
 object CachePolicy:
   /** A safe default for per-client data: cache briefly, never share. */

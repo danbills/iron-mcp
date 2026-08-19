@@ -30,7 +30,7 @@ final case class ListToolsParams(
 
 final case class ListToolsResult(
     tools: List[Tool],
-    ttlMs: Long,
+    ttlMs: CacheTtlMs,
     cacheScope: CacheScope,
     nextCursor: Option[Cursor] = None,
     resultType: ResultType = ResultType.Complete,

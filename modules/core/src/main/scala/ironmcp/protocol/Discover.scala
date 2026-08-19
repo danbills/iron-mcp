@@ -13,7 +13,7 @@ final case class DiscoverParams(_meta: RequestMeta) derives Codec.AsObject
 final case class DiscoverResult(
     supportedVersions: List[ProtocolVersion],
     capabilities: ServerCapabilities,
-    ttlMs: Long,
+    ttlMs: CacheTtlMs,
     cacheScope: CacheScope,
     instructions: Option[NonEmptyString] = None,
     resultType: ResultType = ResultType.Complete,

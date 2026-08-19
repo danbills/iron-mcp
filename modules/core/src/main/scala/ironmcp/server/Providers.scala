@@ -2,6 +2,7 @@ package ironmcp
 package server
 
 import cats.effect.IO
+import io.github.iltotore.iron.autoRefine
 import ironmcp.protocol.*
 
 /** What a server can offer. Each provider maps one-to-one onto a capability:

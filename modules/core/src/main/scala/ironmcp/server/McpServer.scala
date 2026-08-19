@@ -5,6 +5,7 @@ import cats.effect.IO
 import cats.syntax.all.*
 import io.circe.{Decoder, Encoder, Json}
 import io.circe.syntax.*
+import io.github.iltotore.iron.*
 import io.github.iltotore.iron.autoRefine
 import ironmcp.protocol.*
 
@@ -22,7 +23,7 @@ final class McpServer(
     val prompts: Option[PromptProvider] = None,
     val completions: Option[CompletionProvider] = None,
     val subscriptions: Option[SubscriptionProvider] = None,
-    val discoveryTtlMs: Long = 300000L
+    val discoveryTtlMs: DiscoveryTtlMs = 300000L
 ):
 
   /** Capabilities are derived from the providers, never declared separately —
@@ -60,7 +61,9 @@ final class McpServer(
               DiscoverResult(
                 supportedVersions = List(LatestProtocolVersion),
                 capabilities = capabilities,
-                ttlMs = discoveryTtlMs,
+                // The interval on DiscoveryTtlMs strictly implies the
+                // non-negativity CacheTtlMs asks for, so this cannot fail.
+                ttlMs = discoveryTtlMs.assume[CacheTtlMsC],
                 cacheScope = CacheScope.`public`,
                 instructions = instructions,
                 _meta = serverMeta
