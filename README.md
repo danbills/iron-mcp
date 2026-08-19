@@ -141,10 +141,14 @@ harness spawns this per session.
   are gone.
 - **`LTO.thin` breaks the Native link** with `undefined reference to
   snFatalErrorPrefix`. Left off.
+- **Scala 3.9.0-RC6**, ahead of its release as the next LTS (succeeding 3.3).
+  Native works because `nscplugin_3.9.0-RC6` is published for Scala Native
+  0.5.12; the compiler must match the Scala version exactly. Clean under
+  `-Wunused:all -Wvalue-discard`.
 
 ## Stack
 
-Scala 3.8.3 · Iron 3.3.2 · Circe 0.14.16 · cats-effect 3.7.0 · fs2 3.13.0 ·
+Scala 3.9.0-RC6 · Iron 3.3.2 · Circe 0.14.16 · cats-effect 3.7.0 · fs2 3.13.0 ·
 Scala Native 0.5.12
 
 ## Status
