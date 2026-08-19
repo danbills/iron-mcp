@@ -211,15 +211,25 @@ an HTTP transport.
 
 ## Releasing
 
-Tag and push; the `Release` workflow runs `sbt ci-release` against the Sonatype
-Central Portal. The version comes from the tag via sbt-dynver — `build.sbt`
-deliberately sets no `version`.
+Releases are cut locally. sbt 2 uploads to the Sonatype Central Portal itself,
+so there is no CI plugin and no workflow — `sbt-dynver` takes the version from
+the git tag (`build.sbt` deliberately sets no `version`) and `sbt-pgp` signs.
 
 ```bash
-git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+git tag -a v0.1.0 -m "v0.1.0"
+
+export SONATYPE_USERNAME=...   # Central Portal user token, not your login
+export SONATYPE_PASSWORD=...
+export PGP_PASSPHRASE=...
+
+sbt +publishSigned   # sign, into a local bundle
+sbt sonaUpload       # upload; release by hand in the portal
+# or sonaRelease     # upload and release in one step
 ```
 
-An untagged push to `main` publishes a snapshot instead.
+The version is only clean (`0.1.0`) when the tree is clean at the tag —
+sbt-dynver appends a commit and timestamp otherwise, which is a useful guard
+against releasing uncommitted work.
 
 ## License
 

@@ -14,19 +14,19 @@ val munitCeVersion    = "2.2.0"
 inThisBuild(
   List(
     organization := "io.github.danbills",
-    homepage     := Some(url("https://github.com/danbills/iron-mcp")),
-    licenses     := List("MIT" -> url("https://opensource.org/licenses/MIT")),
+    homepage     := Some(uri("https://github.com/danbills/iron-mcp")),
+    licenses     := List("MIT" -> uri("https://opensource.org/licenses/MIT")),
     developers := List(
       Developer(
         id = "danbills",
         name = "Dan Billings",
         email = "dan@megamote.com",
-        url = url("https://github.com/danbills")
+        url = uri("https://github.com/danbills")
       )
     ),
     scmInfo := Some(
       ScmInfo(
-        url("https://github.com/danbills/iron-mcp"),
+        uri("https://github.com/danbills/iron-mcp"),
         "scm:git:https://github.com/danbills/iron-mcp.git",
         Some("scm:git:git@github.com:danbills/iron-mcp.git")
       )
