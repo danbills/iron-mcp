@@ -40,32 +40,15 @@ lazy val core = crossProject(JVMPlatform, NativePlatform)
     )
   )
 
-lazy val http4s = crossProject(JVMPlatform, NativePlatform)
-  .crossType(CrossType.Pure)
-  .in(file("modules/http4s"))
-  .dependsOn(core % "compile->compile;test->test")
-  .settings(
-    name := "iron-mcp-http4s",
-    libraryDependencies ++= Seq(
-      "org.http4s" %% "http4s-core"         % http4sVersion,
-      "org.http4s" %% "http4s-dsl"          % http4sVersion,
-      "org.http4s" %% "http4s-ember-server" % http4sVersion,
-      "org.http4s" %% "http4s-ember-client" % http4sVersion % Test
-    )
-  )
-
 lazy val demo = crossProject(JVMPlatform, NativePlatform)
   .crossType(CrossType.Pure)
   .in(file("modules/demo"))
-  .dependsOn(http4s)
+  .dependsOn(core)
   .settings(
     name := "iron-mcp-demo",
     Compile / mainClass := Some("ironmcp.demo.Main")
   )
-  .nativeSettings(
-    nativeConfig ~= { _.withLTO(scala.scalanative.build.LTO.thin) }
-  )
 
 lazy val root = (project in file("."))
-  .aggregate(core.jvm, core.native, http4s.jvm, http4s.native, demo.jvm, demo.native)
+  .aggregate(core.jvm, core.native, demo.jvm, demo.native)
   .settings(name := "iron-mcp", publish / skip := true)

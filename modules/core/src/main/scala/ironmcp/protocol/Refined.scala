@@ -3,6 +3,7 @@ package protocol
 
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
+import io.github.iltotore.iron.circe.given
 
 /** Constraints taken directly from the MCP specification. Where the spec states
   * a rule in prose, it is stated here as a type, so violating it is a
