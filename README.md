@@ -5,10 +5,11 @@ A **Model Context Protocol server** for Scala 3 — protocol revision
 and no reflection anywhere. Cross-builds to the JVM and **Scala Native**.
 
 ```scala
-final case class Greet(
-    name:  NonEmptyString,
-    times: Int :| Interval.Closed[1, 10]
-) derives Decoder, JsonSchemaOf
+type Recipient = String :| (Not[Empty] DescribedAs "Who to greet")
+type Repeats   = Int :| (Interval.Closed[1, 10] DescribedAs "How many times")
+
+final case class Greet(name: Recipient, times: Repeats)
+  derives Decoder, JsonSchemaOf
 
 val greet = McpTool[Greet]("greet", "Greet someone, one to ten times."): args =>
   IO.pure(CallToolResult.text(s"Hello, ${args.name}!" * args.times))
@@ -25,12 +26,14 @@ There is no hand-written JSON Schema, because the type already is one:
 
 ```json
 {"type":"object",
- "properties":{"name":  {"type":"string",  "minLength":1},
-               "times": {"type":"integer", "minimum":1, "maximum":10}},
+ "properties":{
+   "name":  {"type":"string",  "minLength":1, "description":"Who to greet"},
+   "times": {"type":"integer", "minimum":1, "maximum":10, "description":"How many times"}},
  "required":["name","times"]}
 ```
 
-`Not[Empty]` became `minLength: 1`; `Interval.Closed[1, 10]` became the bounds.
+`Not[Empty]` became `minLength: 1`, `Interval.Closed[1, 10]` became the bounds,
+and `DescribedAs` became the description.
 Widen the type and the advertised schema widens in the same edit — there is no
 second copy of the constraints to drift.
 
@@ -77,8 +80,16 @@ nothing survives into the runtime.
 | `Greater[0]` / `GreaterEqual[0]` | `exclusiveMinimum` / `minimum` |
 | `Match["^[A-Z]{3}$"]` | `pattern` |
 | `MinLength[2]` / `MaxLength[8]` | `minLength` / `maxLength` |
+| `C DescribedAs "text"` | `description` (outermost only — see below) |
 | `Option[A]` | absent from `required` |
 | anything else | no keyword — still enforced by the decoder |
+
+Descriptions live in the type because Iron already has a place for them.
+Only the **outermost** `DescribedAs` is read: Iron's own aliases are
+`DescribedAs` underneath (`GreaterEqual` carries "Should be greater than or
+equal to 1"), so reading every level would smear generated prose over every
+field. A bare `Interval.Closed[1, 10]` therefore describes itself as
+"Should be included in [1, 10]" — true, and useful to a model.
 
 **Iron constraints come from the specification text**, not from taste. The
 `_meta` key grammar — optional dot-separated prefix, alphanumeric-bounded name —

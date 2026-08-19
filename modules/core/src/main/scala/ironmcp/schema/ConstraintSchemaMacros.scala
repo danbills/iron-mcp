@@ -19,8 +19,25 @@ private[schema] object ConstraintSchemaMacros:
 
   def instanceOf[C: Type](using Quotes): Expr[ConstraintSchema[C]] =
     import quotes.reflect.*
-    val keywords = Expr(render(read(TypeRepr.of[C])))
+    val constraint = TypeRepr.of[C]
+    // Only the OUTERMOST DescribedAs becomes the field description. Iron's own
+    // aliases are DescribedAs underneath (GreaterEqual carries "Should be
+    // greater than or equal to 1"), so reading every level would smear
+    // generated constraint prose across every field. Reading only the top
+    // means a description appears when someone wrote one -- and a bare
+    // `Interval.Closed[1, 10]` still contributes its own readable message,
+    // which is true and useful to a model.
+    val description = describe(constraint).map(text => "description" -> text).toList
+    val keywords    = Expr(render(description ++ read(constraint)))
     '{ ConstraintSchema.fromJson[C]($keywords) }
+
+  /** The message on the outermost `DescribedAs`, if there is one. */
+  private def describe(using Quotes)(tpe: quotes.reflect.TypeRepr): Option[String] =
+    import quotes.reflect.*
+    tpe.dealias match
+      case AppliedType(constructor, List(_, message)) if constructor.typeSymbol.name == "DescribedAs" =>
+        literal(message)
+      case _ => None
 
   /** A tiny JSON writer: the macro cannot lift a `circe.Json`, and pulling
     * circe into the macro's own classpath is not worth it for object literals.

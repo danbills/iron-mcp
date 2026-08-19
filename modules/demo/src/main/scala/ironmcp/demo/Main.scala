@@ -13,26 +13,28 @@ import ironmcp.transport.Stdio
 
 /** A stdio MCP server.
   *
-  * Note what is absent: no hand-written JSON Schema. `Greet`'s constraints are
-  * the schema — `Not[Empty]` becomes `minLength: 1`, `Interval.Closed[1, 10]`
-  * becomes `minimum`/`maximum` — derived at compile time from the type the
-  * handler already accepts. Widen the type and the advertised schema widens in
-  * the same edit.
+  * Note what is absent: no hand-written JSON Schema. `Greet`'s types are the
+  * schema — `Not[Empty]` becomes `minLength: 1`, `Interval.Closed[1, 10]`
+  * becomes `minimum`/`maximum`, and `DescribedAs` becomes `description` — all
+  * derived at compile time from the type the handler already accepts. Widen the
+  * type and the advertised schema widens in the same edit.
   */
 object Main extends IOApp.Simple:
 
-  final case class Greet(
-      name: NonEmptyString,
-      times: Int :| Interval.Closed[1, 10]
-  ) derives Decoder,
-        JsonSchemaOf
+  /** Descriptions live in the type, alongside the constraints they describe,
+    * so both reach the model from one declaration and neither can drift.
+    */
+  type Recipient = String :| (Not[Empty] DescribedAs "Who to greet")
+  type Repeats   = Int :| (Interval.Closed[1, 10] DescribedAs "How many times to repeat the greeting")
+
+  final case class Greet(name: Recipient, times: Repeats) derives Decoder, JsonSchemaOf
 
   private val greet = McpTool[Greet](
     name = "greet",
     description = "Greet someone, one to ten times.",
     annotations = Some(ToolAnnotations(readOnlyHint = Some(true), openWorldHint = Some(false)))
   ) { args =>
-    val line = List.fill(args.times)(s"Hello, ${args.name: String}!").mkString(" ")
+    val line = List.fill(args.times: Int)(s"Hello, ${args.name: String}!").mkString(" ")
     IO.pure(CallToolResult.structured(line, Json.obj("greeting" -> Json.fromString(line))))
   }
 

@@ -69,3 +69,36 @@ class SchemaSuite extends FunSuite:
     // Multiple[7] has no keyword here, but the decoder still rejects 8:
     assertEquals(Json.fromInt(8).as[Int :| Multiple[7]].isLeft, true)
     assertEquals(Json.fromInt(14).as[Int :| Multiple[7]].isRight, true)
+
+  type Recipient = String :| (Not[Empty] DescribedAs "Who to greet")
+  type Repeats   = Int :| (Interval.Closed[1, 10] DescribedAs "How many times to repeat")
+
+  final case class Described(name: Recipient, times: Repeats) derives JsonSchemaOf
+
+  test("a DescribedAs on the type becomes the field description"):
+    val properties = summon[JsonSchemaOf[Described]].schema.hcursor.downField("properties")
+    assertEquals(properties.downField("name").get[String]("description"), Right("Who to greet"))
+    assertEquals(properties.downField("times").get[String]("description"), Right("How many times to repeat"))
+
+  test("a description does not displace the constraint keywords"):
+    val times = summon[JsonSchemaOf[Described]].schema.hcursor.downField("properties").downField("times")
+    assertEquals(times.get[Int]("minimum"), Right(1))
+    assertEquals(times.get[Int]("maximum"), Right(10))
+    assertEquals(times.get[String]("type"), Right("integer"))
+
+  final case class Undescribed(name: NonEmptyString) derives JsonSchemaOf
+
+  test("Iron's internal messages on nested aliases do not leak as descriptions"):
+    // NonEmptyString is Not[Empty]; Empty is a DescribedAs("Should be empty")
+    // one level down, and must not surface as the field's description.
+    val name = summon[JsonSchemaOf[Undescribed]].schema.hcursor.downField("properties").downField("name")
+    assertEquals(name.get[String]("description").isLeft, true)
+    assertEquals(name.get[Int]("minLength"), Right(1))
+
+  final case class BareInterval(times: Int :| Interval.Closed[1, 10]) derives JsonSchemaOf
+
+  test("a bare Iron alias contributes its own message as the description"):
+    // Accepted behaviour, not an accident: the outermost DescribedAs here is
+    // Iron's, and its message is a true description of the constraint.
+    val times = summon[JsonSchemaOf[BareInterval]].schema.hcursor.downField("properties").downField("times")
+    assertEquals(times.get[String]("description"), Right("Should be included in [1, 10]"))
