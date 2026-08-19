@@ -2,72 +2,44 @@ package ironmcp
 package demo
 
 import cats.effect.{IO, IOApp}
-import io.circe.Json
+import io.circe.{Decoder, Json}
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.circe.given
 import io.github.iltotore.iron.constraint.all.*
 import ironmcp.protocol.*
+import ironmcp.schema.JsonSchemaOf
 import ironmcp.server.*
 import ironmcp.transport.Stdio
 
-/** A stdio MCP server, which is what every local harness spawns.
+/** A stdio MCP server.
   *
-  * Built as a Scala Native binary this starts in single-digit milliseconds —
-  * the reason the whole stack avoids reflection.
+  * Note what is absent: no hand-written JSON Schema. `Greet`'s constraints are
+  * the schema — `Not[Empty]` becomes `minLength: 1`, `Interval.Closed[1, 10]`
+  * becomes `minimum`/`maximum` — derived at compile time from the type the
+  * handler already accepts. Widen the type and the advertised schema widens in
+  * the same edit.
   */
 object Main extends IOApp.Simple:
 
-  /** Arguments are decoded into a refined case class, so the handler cannot be
-    * reached with a value that violates its constraints.
-    */
-  final case class Greet(name: NonEmptyString, times: Int :| Interval.Closed[1, 10]) derives io.circe.Decoder
+  final case class Greet(
+      name: NonEmptyString,
+      times: Int :| Interval.Closed[1, 10]
+  ) derives Decoder,
+        JsonSchemaOf
 
-  private val greetSchema = ObjectSchema(
-    properties = Map(
-      "name"  -> Json.obj("type" -> Json.fromString("string"), "description" -> Json.fromString("Who to greet")),
-      "times" -> Json.obj(
-        "type"    -> Json.fromString("integer"),
-        "minimum" -> Json.fromInt(1),
-        "maximum" -> Json.fromInt(10)
-      )
-    ),
-    required = List("name", "times")
-  )
-
-  private val tools = new ToolProvider:
-    def list(params: ListToolsParams): IO[ListToolsResult] =
-      IO.pure(
-        ListToolsResult(
-          tools = List(
-            Tool(
-              name = "greet",
-              inputSchema = greetSchema,
-              description = Some("Greet someone, one to ten times."),
-              annotations = Some(ToolAnnotations(readOnlyHint = Some(true), openWorldHint = Some(false)))
-            )
-          ),
-          ttlMs = 60000L,
-          cacheScope = CacheScope.`private`
-        )
-      )
-
-    def call(params: CallToolParams): IO[CallToolResult | InputRequiredResult] =
-      params.name match
-        case "greet" =>
-          val decoded = Json.fromJsonObject(params.arguments.getOrElse(io.circe.JsonObject.empty)).as[Greet]
-          IO.pure(decoded match
-            case Left(failure) => CallToolResult.failed(failure.message)
-            case Right(greet) =>
-              val line = List.fill(greet.times)(s"Hello, ${greet.name: String}!").mkString(" ")
-              CallToolResult.structured(line, Json.obj("greeting" -> Json.fromString(line)))
-          )
-        case other =>
-          IO.pure(CallToolResult.failed(s"no such tool: $other"))
+  private val greet = McpTool[Greet](
+    name = "greet",
+    description = "Greet someone, one to ten times.",
+    annotations = Some(ToolAnnotations(readOnlyHint = Some(true), openWorldHint = Some(false)))
+  ) { args =>
+    val line = List.fill(args.times)(s"Hello, ${args.name: String}!").mkString(" ")
+    IO.pure(CallToolResult.structured(line, Json.obj("greeting" -> Json.fromString(line))))
+  }
 
   private val server = McpServer(
     info = Implementation(name = "iron-mcp-demo", version = "0.1.0"),
     instructions = Some("Demo server for iron-mcp."),
-    tools = Some(tools)
+    tools = Some(ToolSet.of(greet))
   )
 
   def run: IO[Unit] = Stdio.serve(server)

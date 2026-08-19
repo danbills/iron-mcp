@@ -5,18 +5,34 @@ A **Model Context Protocol server** for Scala 3 — protocol revision
 and no reflection anywhere. Cross-builds to the JVM and **Scala Native**.
 
 ```scala
-val tools = new ToolProvider:
-  def list(params: ListToolsParams): IO[ListToolsResult] = ...
-  def call(params: CallToolParams): IO[CallToolResult | InputRequiredResult] =
-    IO.pure(CallToolResult.text("hello"))
+final case class Greet(
+    name:  NonEmptyString,
+    times: Int :| Interval.Closed[1, 10]
+) derives Decoder, JsonSchemaOf
+
+val greet = McpTool[Greet]("greet", "Greet someone, one to ten times."): args =>
+  IO.pure(CallToolResult.text(s"Hello, ${args.name}!" * args.times))
 
 val server = McpServer(
   info  = Implementation(name = "my-server", version = "0.1.0"),
-  tools = Some(tools)
+  tools = Some(ToolSet.of(greet))
 )
 
 Stdio.serve(server)
 ```
+
+There is no hand-written JSON Schema, because the type already is one:
+
+```json
+{"type":"object",
+ "properties":{"name":  {"type":"string",  "minLength":1},
+               "times": {"type":"integer", "minimum":1, "maximum":10}},
+ "required":["name","times"]}
+```
+
+`Not[Empty]` became `minLength: 1`; `Interval.Closed[1, 10]` became the bounds.
+Widen the type and the advertised schema widens in the same edit — there is no
+second copy of the constraints to drift.
 
 ## Why not the official Java SDK
 
@@ -46,6 +62,23 @@ The revision is stateless by construction, which is why `McpServer.handle` is a
 pure function of one message and holds no per-client state at all.
 
 ## Types that do real work
+
+**The schema is derived from the constraints.** A tool's input schema is a
+compile-time reading of its argument type — implemented as a macro rather than
+`given`s, because Scala cannot decompose an intersection type into two unknowns
+during implicit search, and `Interval.Closed[1, 10]` *is* an intersection under
+its alias. The macro walks the `TypeRepr`, so arbitrary compositions work and
+nothing survives into the runtime.
+
+| Iron constraint | JSON Schema |
+|---|---|
+| `Not[Empty]` | `minLength: 1` |
+| `Interval.Closed[1, 10]` | `minimum: 1, maximum: 10` |
+| `Greater[0]` / `GreaterEqual[0]` | `exclusiveMinimum` / `minimum` |
+| `Match["^[A-Z]{3}$"]` | `pattern` |
+| `MinLength[2]` / `MaxLength[8]` | `minLength` / `maxLength` |
+| `Option[A]` | absent from `required` |
+| anything else | no keyword — still enforced by the decoder |
 
 **Iron constraints come from the specification text**, not from taste. The
 `_meta` key grammar — optional dot-separated prefix, alphanumeric-bounded name —
