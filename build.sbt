@@ -8,8 +8,33 @@ val http4sVersion     = "0.23.36"
 val munitVersion      = "1.3.5"
 val munitCeVersion    = "2.2.0"
 
-ThisBuild / organization := "com.megamote"
-ThisBuild / version      := "0.1.0-SNAPSHOT"
+// Publishing metadata. sbt-ci-release forbids `version`, `publishTo`,
+// `publishMavenStyle` and `credentials` here: the version comes from the git
+// tag via sbt-dynver, and the destination from the plugin.
+inThisBuild(
+  List(
+    organization := "io.github.danbills",
+    homepage     := Some(url("https://github.com/danbills/iron-mcp")),
+    licenses     := List("MIT" -> url("https://opensource.org/licenses/MIT")),
+    developers := List(
+      Developer(
+        id = "danbills",
+        name = "Dan Billings",
+        email = "dan@megamote.com",
+        url = url("https://github.com/danbills")
+      )
+    ),
+    scmInfo := Some(
+      ScmInfo(
+        url("https://github.com/danbills/iron-mcp"),
+        "scm:git:https://github.com/danbills/iron-mcp.git",
+        Some("scm:git:git@github.com:danbills/iron-mcp.git")
+      )
+    ),
+    versionScheme := Some("early-semver")
+  )
+)
+
 ThisBuild / scalaVersion := scala3Version
 
 ThisBuild / scalacOptions ++= Seq(
@@ -27,7 +52,9 @@ lazy val core = crossProject(JVMPlatform, NativePlatform)
   .crossType(CrossType.Pure)
   .in(file("modules/core"))
   .settings(
-    name := "iron-mcp-core",
+    name        := "iron-mcp-core",
+    description := "A Model Context Protocol server for Scala 3 — protocol revision 2026-07-28, " +
+      "with Iron refinement types, compile-time derived JSON Schema, and no reflection.",
     libraryDependencies ++= Seq(
       "io.github.iltotore" %% "iron"              % ironVersion,
       "io.github.iltotore" %% "iron-circe"        % ironVersion,
@@ -46,7 +73,8 @@ lazy val demo = crossProject(JVMPlatform, NativePlatform)
   .dependsOn(core)
   .settings(
     name := "iron-mcp-demo",
-    Compile / mainClass := Some("ironmcp.demo.Main")
+    Compile / mainClass := Some("ironmcp.demo.Main"),
+    publish / skip := true
   )
 
 lazy val root = (project in file("."))

@@ -159,6 +159,14 @@ from a null one, and several hosts reject `null` where they expect omission.
 | `server/McpServer.scala` | dispatch, version checks, capability derivation |
 | `transport/{Wire,Stdio}.scala` | newline-delimited JSON-RPC on stdin/stdout |
 
+## Using it
+
+```scala
+libraryDependencies += "io.github.danbills" %% "iron-mcp-core" % "<version>"
+```
+
+Published for the JVM and Scala Native 0.5 from the same source.
+
 ## Running
 
 ```bash
@@ -200,6 +208,18 @@ Scala Native 0.5.12
 The protocol layer, dispatcher and stdio transport are complete and tested.
 Not yet built: real capability providers (email, web search, computer use) and
 an HTTP transport.
+
+## Releasing
+
+Tag and push; the `Release` workflow runs `sbt ci-release` against the Sonatype
+Central Portal. The version comes from the tag via sbt-dynver — `build.sbt`
+deliberately sets no `version`.
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+```
+
+An untagged push to `main` publishes a snapshot instead.
 
 ## License
 
