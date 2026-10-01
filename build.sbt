@@ -99,6 +99,20 @@ lazy val weather = (project in file("modules/weather"))
     )
   )
 
+lazy val nasa = (project in file("modules/nasa"))
+  .dependsOn(core.jvm)
+  .settings(
+    name := "iron-mcp-nasa",
+    Compile / mainClass := Some("ironmcp.nasa.Main"),
+    publish / skip := true,
+    // A real-world example that calls out over HTTP, so it is JVM-only:
+    // the ember client does not run on Scala Native.
+    libraryDependencies ++= Seq(
+      "org.http4s" %% "http4s-ember-client" % http4sVersion,
+      "org.http4s" %% "http4s-circe"        % http4sVersion
+    )
+  )
+
 lazy val root = (project in file("."))
-  .aggregate(core.jvm, core.native, demo.jvm, demo.native, weather)
+  .aggregate(core.jvm, core.native, demo.jvm, demo.native, weather, nasa)
   .settings(name := "iron-mcp", publish / skip := true)

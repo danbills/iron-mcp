@@ -11,6 +11,8 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
   - `transport/` — `Wire.scala`, `Stdio.scala`
 - `modules/core/src/test/` — munit test suites
 - `modules/demo/` — runnable stdio demo server
+- `modules/weather/` — example MCP server over the NWS (weather.gov) API, JVM-only
+- `modules/nasa/` — example MCP server over NASA's APOD API (`NASA_API_KEY`), JVM-only
 - `build.sbt`, `project/` — sbt 2 build
 
 ## Build, Test, and Development Commands
@@ -18,6 +20,8 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
 ```bash
 sbt --client "coreJVM/Test/testFull"   # run tests
 sbt --client "demoJVM/run"             # start the stdio demo server on the JVM
+sbt --client "weather/run"             # run the weather.gov example (needs no key)
+sbt --client "nasa/run"                # run the NASA APOD example (set NASA_API_KEY)
 sbt --client "demoNative/nativeLink"   # native binary
 ```
 
