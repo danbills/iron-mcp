@@ -2,13 +2,14 @@ package ironmcp
 package weather
 
 import cats.effect.{IO, IOApp}
-import io.circe.{Decoder, DecodingFailure, Json}
+import io.circe.{Decoder, Json}
 import io.github.iltotore.iron.*
+import io.github.iltotore.iron.circe.given
 import io.github.iltotore.iron.constraint.all.*
 import org.http4s.circe.jsonDecoder
 import org.http4s.ember.client.EmberClientBuilder
 import ironmcp.protocol.*
-import ironmcp.schema.{ConstraintSchema, JsonSchemaOf}
+import ironmcp.schema.JsonSchemaOf
 import ironmcp.server.*
 import ironmcp.transport.Stdio
 
@@ -31,47 +32,9 @@ object Main extends IOApp.Simple:
   type EventC = Not[Empty] DescribedAs "NWS event name to filter by, e.g. Flood Warning (optional)"
   type Event  = String :| EventC
 
-  // Numeric refinements don't get a derived ConstraintSchema or Decoder here, so
-  // we state both explicitly: the schema is the base number type plus the
-  // constraint's keywords, and the decoder reads a Double then checks it.
-  given JsonSchemaOf[Latitude] =
-    JsonSchemaOf.instance(Json.obj("type" -> Json.fromString("number")).deepMerge(ConstraintSchema.derived[LatitudeC].keywords))
-  given JsonSchemaOf[Longitude] =
-    JsonSchemaOf.instance(Json.obj("type" -> Json.fromString("number")).deepMerge(ConstraintSchema.derived[LongitudeC].keywords))
-
-  private def decodeRefined[A, C](c: io.circe.HCursor)(using dec: Decoder[A], rc: RuntimeConstraint[A, C]): Either[DecodingFailure, A :| C] =
-    c.as[A].flatMap { a =>
-      if rc.test(a) then Right(a.assume[C])
-      else Left(DecodingFailure(rc.message, c.history))
-    }
-
-  given Decoder[Latitude]  = Decoder.instance(c => decodeRefined[Double, LatitudeC](c))
-  given Decoder[Longitude] = Decoder.instance(c => decodeRefined[Double, LongitudeC](c))
-  given Decoder[Event]     = Decoder.instance(c => decodeRefined[String, EventC](c))
-
-  final case class GetForecast(latitude: Latitude, longitude: Longitude) derives JsonSchemaOf
-  final case class GetConditions(latitude: Latitude, longitude: Longitude) derives JsonSchemaOf
-  final case class GetAlerts(latitude: Latitude, longitude: Longitude, event: Option[Event]) derives JsonSchemaOf
-
-  given Decoder[GetForecast] = Decoder.instance { c =>
-    for
-      lat <- c.downField("latitude").as[Latitude]
-      lon <- c.downField("longitude").as[Longitude]
-    yield GetForecast(lat, lon)
-  }
-  given Decoder[GetConditions] = Decoder.instance { c =>
-    for
-      lat <- c.downField("latitude").as[Latitude]
-      lon <- c.downField("longitude").as[Longitude]
-    yield GetConditions(lat, lon)
-  }
-  given Decoder[GetAlerts] = Decoder.instance { c =>
-    for
-      lat <- c.downField("latitude").as[Latitude]
-      lon <- c.downField("longitude").as[Longitude]
-      ev  <- c.downField("event").as[Option[Event]]
-    yield GetAlerts(lat, lon, ev)
-  }
+  final case class GetForecast(latitude: Latitude, longitude: Longitude) derives Decoder, JsonSchemaOf
+  final case class GetConditions(latitude: Latitude, longitude: Longitude) derives Decoder, JsonSchemaOf
+  final case class GetAlerts(latitude: Latitude, longitude: Longitude, event: Option[Event]) derives Decoder, JsonSchemaOf
 
   private val nwsBase = "https://api.weather.gov"
 
@@ -229,7 +192,6 @@ object Main extends IOApp.Simple:
           val eff      = s2("effective")
           val exp      = s2("expires")
           val head     = s2("headline")
-          val line     = s"$event — $area ($severity); effective $eff, expires $exp" + (if head != "-" then s"; $head" else "")
           Json.obj(
             "event"    -> Json.fromString(event),
             "area"     -> Json.fromString(area),
