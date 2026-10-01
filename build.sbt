@@ -1,10 +1,10 @@
 import sbtcrossproject.CrossPlugin.autoImport.{crossProject, CrossType}
 
-val scala3Version     = "3.9.0-RC6"
+val scala3Version     = "3.9.0"
 val ironVersion       = "3.3.2"
 val circeVersion      = "0.14.16"
 val catsEffectVersion = "3.7.0"
-val http4sVersion     = "0.23.36"
+val http4sVersion     = "0.23.37"
 val munitVersion      = "1.3.5"
 val munitCeVersion    = "2.2.0"
 
@@ -85,6 +85,20 @@ lazy val demo = crossProject(JVMPlatform, NativePlatform)
     publish / skip := true
   )
 
+lazy val weather = (project in file("modules/weather"))
+  .dependsOn(core.jvm)
+  .settings(
+    name := "iron-mcp-weather",
+    Compile / mainClass := Some("ironmcp.weather.Main"),
+    publish / skip := true,
+    // A real-world example that calls out over HTTP, so it is JVM-only:
+    // the ember client does not run on Scala Native.
+    libraryDependencies ++= Seq(
+      "org.http4s" %% "http4s-ember-client" % http4sVersion,
+      "org.http4s" %% "http4s-circe"        % http4sVersion
+    )
+  )
+
 lazy val root = (project in file("."))
-  .aggregate(core.jvm, core.native, demo.jvm, demo.native)
+  .aggregate(core.jvm, core.native, demo.jvm, demo.native, weather)
   .settings(name := "iron-mcp", publish / skip := true)
