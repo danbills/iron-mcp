@@ -119,9 +119,9 @@ methods that may ask the client for something return a union; nothing else can,
 because no other signature admits it:
 
 ```scala
-def call(params: CallToolParams): IO[CallToolResult | InputRequiredResult]
-def get(params: GetPromptParams): IO[GetPromptResult | InputRequiredResult]
-def read(params: ReadResourceParams): IO[ReadResourceResult | InputRequiredResult]
+def call(params: CallToolParams): F[CallToolResult | InputRequiredResult]
+def get(params: GetPromptParams): F[GetPromptResult | InputRequiredResult]
+def read(params: ReadResourceParams): F[ReadResourceResult | InputRequiredResult]
 ```
 
 **Tool failures are results, not protocol errors.** MCP reserves JSON-RPC errors
@@ -131,6 +131,39 @@ the model can read and correct it. An Iron violation lands there too:
 ```json
 {"id":4,"result":{"content":[{"type":"text","text":"Should be included in [1, 10]"}],"isError":true}}
 ```
+
+**No `IO` in the server.** `McpServer[F]`, the providers, `McpTool[F]` and
+`ToolSet[F]` are polymorphic in the effect, each asking only for what it uses:
+
+| Piece | Needs |
+|---|---|
+| `McpServer[F]` (dispatch) | `Applicative` |
+| `ToolSet[F]` | `Applicative` |
+| `McpTool[A](...) { handler }` | `ApplicativeThrow`: a handler that fails becomes an `isError` result naming the tool |
+| `Stdio.serve` | `Async` + `LiftIO` (fs2 drives stdin/stdout through `IO` on Native) |
+
+`McpTool[Greet](...)` infers `F` from the handler, so `IO` callers write the same
+code as before, and the tests run whole servers in plain `Either[Throwable, *]`.
+
+**Tools as programs.** The examples describe the API calls a tool makes as data,
+in Bjarnason's "reasonably priced monads" style: an algebra of requests
+(`NwsOp` for weather.gov, `ApodOp` for NASA), smart constructors polymorphic in
+the coproduct (`Nws[G]`, `Apod[G]`), and an http4s interpreter needing only
+`Concurrent`. A tool handler is a `Free` program folded through an interpreter:
+
+```scala
+def forecast[G[_]](args: GetForecast)(using N: Nws[G]): Free[G, CallToolResult] =
+  for
+    pt    <- N.point(args.latitude, args.longitude)
+    fcast <- N.forecast(pt.forecast)
+  yield render(fcast)
+
+McpTool[GetForecast](name = "get_forecast", description = "...")(forecast[NwsOp](_).foldMap(nws))
+```
+
+The same program runs against weather.gov or canned answers, and composes with
+other algebras (an LLM's, say) through an `EitherK` coproduct. Core does not
+depend on cats-free; only the examples do.
 
 ## Codecs
 
@@ -155,7 +188,7 @@ from a null one, and several hosts reject `null` where they expect omission.
 | `protocol/JsonRpc.scala` | envelope, request ids, the nine error codes |
 | `protocol/Meta.scala` | the `_meta` envelope; `protocolVersion` + `clientCapabilities` required |
 | `protocol/{Tools,Resources,Prompts,Completion,Discover,Subscriptions,Notifications}.scala` | the full server surface |
-| `server/Providers.scala` | one trait per capability |
+| `server/Providers.scala` | one trait per capability, polymorphic in `F` |
 | `server/McpServer.scala` | dispatch, version checks, capability derivation |
 | `transport/{Wire,Stdio}.scala` | newline-delimited JSON-RPC on stdin/stdout |
 
@@ -170,7 +203,8 @@ Published for the JVM and Scala Native 0.5 from the same source.
 ## Running
 
 ```bash
-sbt "coreJVM/Test/testFull"   # 17 protocol tests
+sbt "coreJVM/Test/testFull"   # protocol and schema suites
+sbt "weather/Test/testFull" "nasa/Test/testFull"   # the example tools, offline
 sbt "demoJVM/run"             # stdio server on the JVM
 sbt "demoNative/nativeLink"   # native binary
 ```

@@ -1,7 +1,7 @@
 package ironmcp
 package server
 
-import cats.effect.IO
+import cats.Applicative
 import cats.syntax.all.*
 import io.circe.{Decoder, Encoder, Json}
 import io.circe.syntax.*
@@ -14,17 +14,20 @@ import ironmcp.protocol.*
   * It holds no per-client state at all: there is no handshake to remember, so
   * `handle` is a pure function of one message. That is what makes it safe to
   * run behind any number of replicas, and it is why this revision was chosen.
+  *
+  * Dispatch only lifts and maps provider results, so `F` needs nothing beyond
+  * `Applicative`; the transport decides how much more it needs.
   */
-final class McpServer(
+final class McpServer[F[_]](
     val info: Implementation,
     val instructions: Option[NonEmptyString] = None,
-    val tools: Option[ToolProvider] = None,
-    val resources: Option[ResourceProvider] = None,
-    val prompts: Option[PromptProvider] = None,
-    val completions: Option[CompletionProvider] = None,
-    val subscriptions: Option[SubscriptionProvider] = None,
+    val tools: Option[ToolProvider[F]] = None,
+    val resources: Option[ResourceProvider[F]] = None,
+    val prompts: Option[PromptProvider[F]] = None,
+    val completions: Option[CompletionProvider[F]] = None,
+    val subscriptions: Option[SubscriptionProvider[F]] = None,
     val discoveryTtlMs: DiscoveryTtlMs = 300000L
-):
+)(using F: Applicative[F]):
 
   /** Capabilities are derived from the providers, never declared separately —
     * a server cannot advertise tools it has no way to serve.
@@ -41,23 +44,23 @@ final class McpServer(
   /** Answers one message. `None` means the message was a notification, which by
     * JSON-RPC rule gets no reply.
     */
-  def handle(message: JsonRpcMessage): IO[Option[JsonRpcMessage]] = message match
+  def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] = message match
     case JsonRpcMessage.Request(id, method, params) =>
       dispatch(Method.parse(method), params).map {
         case Right(result) => Some(JsonRpcMessage.Success(id, result))
         case Left(error)   => Some(JsonRpcMessage.Failure(Some(id), error))
       }
-    case JsonRpcMessage.Notification(_, _) => IO.none
+    case JsonRpcMessage.Notification(_, _) => F.pure(None)
     // A stateless server never initiates a request, so it can never be the
     // recipient of a response.
-    case JsonRpcMessage.Success(_, _) | JsonRpcMessage.Failure(_, _) => IO.none
+    case JsonRpcMessage.Success(_, _) | JsonRpcMessage.Failure(_, _) => F.pure(None)
 
-  private def dispatch(method: Method, params: Option[Json]): IO[Either[JsonRpcError, Json]] =
+  private def dispatch(method: Method, params: Option[Json]): F[Either[JsonRpcError, Json]] =
     method match
       case Method.Discover =>
         withParams[DiscoverParams](params) { request =>
           checkVersion(request._meta).traverse { _ =>
-            IO.pure(
+            F.pure(
               DiscoverResult(
                 supportedVersions = List(LatestProtocolVersion),
                 capabilities = capabilities,
@@ -126,7 +129,7 @@ final class McpServer(
         }
 
       case other =>
-        IO.pure(
+        F.pure(
           Left(JsonRpcError(ErrorCode.MethodNotFound, s"unsupported method: ${other.wire}".assumeNonEmpty))
         )
 
@@ -139,22 +142,22 @@ final class McpServer(
       case other                      => other.asInstanceOf[A].asJson
 
   private def served[P](provider: Option[P], capability: String)(
-      run: P => IO[Either[JsonRpcError, Json]]
-  ): IO[Either[JsonRpcError, Json]] =
+      run: P => F[Either[JsonRpcError, Json]]
+  ): F[Either[JsonRpcError, Json]] =
     provider match
       case Some(value) => run(value)
       case None =>
-        IO.pure(
+        F.pure(
           Left(JsonRpcError(ErrorCode.MethodNotFound, s"this server does not serve $capability".assumeNonEmpty))
         )
 
   private def withParams[P: Decoder](params: Option[Json])(
-      run: P => IO[Either[JsonRpcError, Json]]
-  ): IO[Either[JsonRpcError, Json]] =
+      run: P => F[Either[JsonRpcError, Json]]
+  ): F[Either[JsonRpcError, Json]] =
     params.getOrElse(Json.obj()).as[P] match
       case Right(decoded) => run(decoded)
       case Left(failure) =>
-        IO.pure(
+        F.pure(
           Left(JsonRpcError(ErrorCode.InvalidParams, failure.getMessage.assumeNonEmpty, Some(failure.getMessage.asJson)))
         )
 
@@ -177,9 +180,9 @@ final class McpServer(
         )
       )
 
-  private def guarded(meta: RequestMeta)(run: => IO[Json]): IO[Either[JsonRpcError, Json]] =
+  private def guarded(meta: RequestMeta)(run: => F[Json]): F[Either[JsonRpcError, Json]] =
     checkVersion(meta) match
-      case Left(error) => IO.pure(Left(error))
+      case Left(error) => F.pure(Left(error))
       case Right(_)    => run.map(Right(_))
 
 extension (self: String)

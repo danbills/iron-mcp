@@ -13,7 +13,7 @@ import munit.CatsEffectSuite
 
 class ProtocolSuite extends CatsEffectSuite:
 
-  private val echo = new ToolProvider:
+  private val echo = new ToolProvider[IO]:
     def list(params: ListToolsParams): IO[ListToolsResult] =
       IO.pure(
         ListToolsResult(

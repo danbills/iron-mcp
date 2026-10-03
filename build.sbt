@@ -94,8 +94,12 @@ lazy val weather = (project in file("modules/weather"))
     // A real-world example that calls out over HTTP, so it is JVM-only:
     // the ember client does not run on Scala Native.
     libraryDependencies ++= Seq(
-      "org.http4s" %% "http4s-ember-client" % http4sVersion,
-      "org.http4s" %% "http4s-circe"        % http4sVersion
+      "org.http4s"    %% "http4s-ember-client" % http4sVersion,
+      "org.http4s"    %% "http4s-circe"        % http4sVersion,
+      // Tools are programs over an algebra of the API's requests (see NwsOp).
+      "org.typelevel" %% "cats-free"           % "2.13.0",
+      "org.scalameta" %% "munit"               % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
     )
   )
 
@@ -108,8 +112,12 @@ lazy val nasa = (project in file("modules/nasa"))
     // A real-world example that calls out over HTTP, so it is JVM-only:
     // the ember client does not run on Scala Native.
     libraryDependencies ++= Seq(
-      "org.http4s" %% "http4s-ember-client" % http4sVersion,
-      "org.http4s" %% "http4s-circe"        % http4sVersion
+      "org.http4s"    %% "http4s-ember-client" % http4sVersion,
+      "org.http4s"    %% "http4s-circe"        % http4sVersion,
+      // Tools are programs over an algebra of the API's requests (see ApodOp).
+      "org.typelevel" %% "cats-free"           % "2.13.0",
+      "org.scalameta" %% "munit"               % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
     )
   )
 
