@@ -213,7 +213,7 @@ sbt "demoNative/nativeLink"   # native binary
 echo '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{
   "io.modelcontextprotocol/protocolVersion":"2026-07-28",
   "io.modelcontextprotocol/clientCapabilities":{}}}}' \
-| ./target/out/native0.5/scala-3.8.3/iron-mcp-demo/native/ironmcp.demo.Main
+| ./target/out/native0.5/scala-3.9.0/iron-mcp-demo/native/ironmcp.demo.Main
 ```
 
 The Native binary is ~17 MB and answers `server/discover` in about 44 ms
@@ -227,21 +227,35 @@ harness spawns this per session.
   are gone.
 - **`LTO.thin` breaks the Native link** with `undefined reference to
   snFatalErrorPrefix`. Left off.
-- **Scala 3.9.0-RC6**, ahead of its release as the next LTS (succeeding 3.3).
-  Native works because `nscplugin_3.9.0-RC6` is published for Scala Native
-  0.5.12; the compiler must match the Scala version exactly. Clean under
-  `-Wunused:all -Wvalue-discard`.
+- **Scala 3.9.0**, the next LTS (succeeding 3.3). Native works because
+  `nscplugin_3.9.0` is published for Scala Native 0.5.12; the compiler must
+  match the Scala version exactly.
+- **Warnings are not errors.** The build runs `-Wunused:all -Wvalue-discard`
+  without `-Werror`, and `main` carries 14 unused-import/parameter warnings
+  (mostly unused `iron.circe.given` imports in `protocol/` and `schema/`). New
+  code should add none. sbt 2 caches compile results and a cache hit replays no
+  warnings, so see [AGENTS.md](AGENTS.md) before trusting a quiet build.
+- **Scala 3.9.0 crashes on clause interleaving with named arguments**
+  (`unexpected tree for type application`), which is why `McpTool.apply`
+  returns a `Builder` instead of taking a second type-parameter clause.
 
 ## Stack
 
-Scala 3.9.0-RC6 · Iron 3.3.2 · Circe 0.14.16 · cats-effect 3.7.0 · fs2 3.13.0 ·
-Scala Native 0.5.12
+Scala 3.9.0 · Iron 3.3.2 · Circe 0.14.16 · cats-effect 3.7.0 · fs2 3.13.0 ·
+Scala Native 0.5.12 · sbt 2.0.9. The JVM-only examples add http4s 0.23.37
+(Ember client) and cats-free 2.13.0.
 
 ## Status
 
-The protocol layer, dispatcher and stdio transport are complete and tested.
-Not yet built: real capability providers (email, web search, computer use) and
-an HTTP transport.
+The protocol layer, dispatcher and stdio transport are complete and tested,
+on the JVM and Scala Native. Two example servers call real APIs:
+`modules/weather` (weather.gov forecast, conditions and alerts; no key) and
+`modules/nasa` (Astronomy Picture of the Day; `NASA_API_KEY`). Their tools are
+`Free` programs over request algebras, tested offline.
+
+Not yet built: resource, prompt and completion providers beyond the traits, an
+HTTP transport, and capability providers such as email, web search or computer
+use.
 
 ## Releasing
 

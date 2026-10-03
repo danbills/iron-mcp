@@ -29,8 +29,8 @@ Releases are cut locally (no CI): `git tag -a v0.1.0`, then `sbt +publishSigned`
 
 ## Coding Style & Naming Conventions
 
-- Scala 3.9.0-RC6, significant indentation (no braces).
-- Strict compiler flags (`-Wunused:all -Wvalue-discard -deprecation -feature -unchecked`); code must compile warning-free.
+- Scala 3.9.0, significant indentation (no braces).
+- Strict compiler flags (`-Wunused:all -Wvalue-discard -deprecation -feature -unchecked`), without `-Werror`. `main` carries 14 pre-existing unused warnings; new code must add none (check with a genuine compile — see below).
 - No reflection, no Jackson, no hand-written JSON Schema: codecs derive at compile time from `Mirror` (Circe); hand-write one only where derivation cannot express the shape.
 - Express constraints as Iron refinement types (`String :| (Not[Empty] DescribedAs "...")`); the schema macro reads them. `DescribedAs` goes on the outermost type only.
 - Names follow domain vocabulary (`McpServer`, `ToolProvider`); one file per concept.
