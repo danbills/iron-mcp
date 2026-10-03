@@ -170,9 +170,9 @@ Published for the JVM and Scala Native 0.5 from the same source.
 ## Running
 
 ```bash
-sbt --client "coreJVM/Test/testFull"   # 17 protocol tests
-sbt --client "demoJVM/run"             # stdio server on the JVM
-sbt --client "demoNative/nativeLink"   # native binary
+sbt "coreJVM/Test/testFull"   # 17 protocol tests
+sbt "demoJVM/run"             # stdio server on the JVM
+sbt "demoNative/nativeLink"   # native binary
 ```
 
 ```bash

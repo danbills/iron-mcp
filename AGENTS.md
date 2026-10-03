@@ -18,11 +18,11 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
 ## Build, Test, and Development Commands
 
 ```bash
-sbt --client "coreJVM/Test/testFull"   # run tests
-sbt --client "demoJVM/run"             # start the stdio demo server on the JVM
-sbt --client "weather/run"             # run the weather.gov example (needs no key)
-sbt --client "nasa/run"                # run the NASA APOD example (set NASA_API_KEY)
-sbt --client "demoNative/nativeLink"   # native binary
+sbt "coreJVM/Test/testFull"   # run tests
+sbt "demoJVM/run"             # start the stdio demo server on the JVM
+sbt "weather/run"             # run the weather.gov example (needs no key)
+sbt "nasa/run"                # run the NASA APOD example (set NASA_API_KEY)
+sbt "demoNative/nativeLink"   # native binary
 ```
 
 Releases are cut locally (no CI): `git tag -a v0.1.0`, then `sbt +publishSigned` and `sbt sonaUpload`; the version comes from the tag via sbt-dynver.
@@ -38,7 +38,7 @@ Releases are cut locally (no CI): `git tag -a v0.1.0`, then `sbt +publishSigned`
 ## Testing Guidelines
 
 - Framework: munit + munit-cats-effect (`CatsEffectSuite`); existing suites are `ProtocolSuite.scala` and `SchemaSuite.scala`. Name new suites `<Area>Suite` under `modules/core/src/test/scala/ironmcp/`.
-- Run with `sbt --client "coreJVM/Test/testFull"`; keep tests fast and hermetic. Cover new protocol behavior by round-tripping real wire JSON through `Wire`.
+- Run with `sbt "coreJVM/Test/testFull"`; keep tests fast and hermetic. Cover new protocol behavior by round-tripping real wire JSON through `Wire`.
 
 ## Commit & Pull Request Guidelines
 
