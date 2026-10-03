@@ -6,3 +6,4 @@ project/project/
 .bloop/
 .idea/
 *.log
+project/metals.sbt
