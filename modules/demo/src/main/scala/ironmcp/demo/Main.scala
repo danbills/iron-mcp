@@ -1,8 +1,9 @@
 package ironmcp
 package demo
 
+import cats.Show
 import cats.effect.{IO, IOApp}
-import io.circe.{Decoder, Json}
+import io.circe.{Decoder, Encoder}
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.circe.given
 import io.github.iltotore.iron.constraint.all.*
@@ -17,7 +18,8 @@ import ironmcp.transport.Stdio
   * schema — `Not[Empty]` becomes `minLength: 1`, `Interval.Closed[1, 10]`
   * becomes `minimum`/`maximum`, and `DescribedAs` becomes `description` — all
   * derived at compile time from the type the handler already accepts. Widen the
-  * type and the advertised schema widens in the same edit.
+  * type and the advertised schema widens in the same edit. The output schema
+  * comes the same way, from `Greeting`, the type the handler returns.
   */
 object Main extends IOApp.Simple:
 
@@ -29,13 +31,17 @@ object Main extends IOApp.Simple:
 
   final case class Greet(name: Recipient, times: Repeats) derives Decoder, JsonSchemaOf
 
+  final case class Greeting(greeting: String) derives Encoder.AsObject, JsonSchemaOf
+
+  object Greeting:
+    given Show[Greeting] = _.greeting
+
   private val greet = McpTool[Greet](
     name = "greet",
     description = "Greet someone, one to ten times.",
     annotations = Some(ToolAnnotations(readOnlyHint = Some(true), openWorldHint = Some(false)))
   ) { args =>
-    val line = List.fill(args.times: Int)(s"Hello, ${args.name: String}!").mkString(" ")
-    IO.pure(CallToolResult.structured(line, Json.obj("greeting" -> Json.fromString(line))))
+    IO.pure(Greeting(List.fill(args.times: Int)(s"Hello, ${args.name: String}!").mkString(" ")))
   }
 
   private val server = McpServer(

@@ -92,6 +92,22 @@ class WeatherToolsSuite extends CatsEffectSuite:
     assertEquals(result.isError, Some(true))
     assertEquals(text(result), "get_forecast failed: GET https://api.weather.gov/points failed: 503")
 
+  /** The keys a structured result writes are exactly the advertised properties, less any optional ones it omitted. */
+  private def conforms(tools: ToolSet[Result], name: ToolName, result: CallToolResult): Unit =
+    val schema = tools.list(ListToolsParams(meta)).toOption.flatMap(_.tools.find(_.name == name)).flatMap(_.outputSchema)
+      .getOrElse(fail(s"$name declares no output schema"))
+    val properties = schema("properties").flatMap(_.asObject).map(_.keys.toSet).getOrElse(Set.empty)
+    val required   = schema("required").flatMap(_.as[List[String]].toOption).getOrElse(Nil).toSet
+    val written    = result.structuredContent.flatMap(_.asObject).map(_.keys.toSet).getOrElse(fail(s"$name wrote no structured content"))
+    assert(written.subsetOf(properties), s"$name wrote ${written -- properties} beyond its schema")
+    assert(required.subsetOf(written), s"$name left out required ${required -- written}")
+
+  test("every structured result matches the output schema its tool advertises"):
+    val tools = WeatherTools(canned(history = Right(List(obs(Some(101500.0)), obs(Some(101200.0))))))
+    conforms(tools, "get_forecast", call(tools, "get_forecast", here*))
+    conforms(tools, "get_conditions", call(tools, "get_conditions", here*))
+    conforms(tools, "get_alerts", call(tools, "get_alerts", (here :+ ("event" -> "Flood Warning".asJson))*))
+
   test("NwsHttp4s builds weather.gov URLs and decodes GeoJSON"):
     val point = Json.obj(
       "type" -> "Feature".asJson,

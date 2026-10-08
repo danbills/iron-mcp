@@ -11,8 +11,11 @@ type Repeats   = Int :| (Interval.Closed[1, 10] DescribedAs "How many times")
 final case class Greet(name: Recipient, times: Repeats)
   derives Decoder, JsonSchemaOf
 
+final case class Greeting(greeting: String)
+  derives Encoder.AsObject, JsonSchemaOf
+
 val greet = McpTool[Greet]("greet", "Greet someone, one to ten times."): args =>
-  IO.pure(CallToolResult.text(s"Hello, ${args.name}!" * args.times))
+  IO.pure(Greeting(s"Hello, ${args.name}!" * args.times))
 
 val server = McpServer(
   info  = Implementation(name = "my-server", version = "0.1.0"),
@@ -36,6 +39,15 @@ There is no hand-written JSON Schema, because the type already is one:
 and `DescribedAs` became the description.
 Widen the type and the advertised schema widens in the same edit — there is no
 second copy of the constraints to drift.
+
+The output works the same way. The handler returns a `Greeting`, so the tool
+advertises an `outputSchema` derived from `Greeting`, and its result's
+`structuredContent` is that `Greeting`, encoded. A `Show` for the type renders the text block;
+without one, the text block is the serialized JSON. Return `Either[String, O]`
+when the tool can fail at its job (`Left` becomes an `isError` result), or a
+`CallToolResult` to build the result by hand, with no output schema. Results
+encoded with a circe `Configuration` derive `ConfiguredJsonSchemaOf`, so a
+snake_case encoder gets a snake_case schema.
 
 ## Why not the official Java SDK
 
@@ -152,11 +164,11 @@ the coproduct (`Nws[G]`, `Apod[G]`), and an http4s interpreter needing only
 `Concurrent`. A tool handler is a `Free` program folded through an interpreter:
 
 ```scala
-def forecast[G[_]](args: GetForecast)(using N: Nws[G]): Free[G, CallToolResult] =
+def forecast[G[_]](args: GetForecast)(using N: Nws[G]): Free[G, ForecastResult] =
   for
     pt    <- N.point(args.latitude, args.longitude)
     fcast <- N.forecast(pt.forecast)
-  yield render(fcast)
+  yield ForecastResult("NWS forecast", periodsOf(fcast))
 
 McpTool[GetForecast](name = "get_forecast", description = "...")(forecast[NwsOp](_).foldMap(nws))
 ```

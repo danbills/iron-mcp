@@ -8,12 +8,13 @@ import io.github.iltotore.iron.autoRefine
 import ironmcp.protocol.*
 import ironmcp.schema.JsonSchemaOf
 
-/** A tool defined by the type of its arguments.
+/** A tool defined by the types of its arguments and its result.
   *
   * The input schema is derived from `A`, so it cannot disagree with what the
   * handler accepts; there is no second copy of the constraints to keep in step.
   * Decoding happens before the handler runs, so `A` is already valid — including
-  * every Iron refinement on it.
+  * every Iron refinement on it. Likewise the output schema is derived from what
+  * the handler returns (see [[ToolOutput]]).
   *
   * A handler that fails comes back as an `isError` result naming the tool, never
   * as a protocol error: the model can read it and try again.
@@ -22,26 +23,26 @@ final case class McpTool[F[_]](definition: Tool, invoke: Json => F[CallToolResul
 
 object McpTool:
 
-  /** `McpTool[Args](name, description) { args => ... }`: the effect is inferred from the handler. */
+  /** `McpTool[Args](name, description) { args => ... }`: the effect and the output type are inferred from the
+    * handler.
+    */
   def apply[A](
       name: ToolName,
       description: NonEmptyString,
       title: Option[NonEmptyString] = None,
-      annotations: Option[ToolAnnotations] = None,
-      outputSchema: Option[JsonObject] = None
+      annotations: Option[ToolAnnotations] = None
   ): Builder[A] =
-    Builder(name, description, title, annotations, outputSchema)
+    Builder(name, description, title, annotations)
 
   final class Builder[A] private[McpTool] (
       name: ToolName,
       description: NonEmptyString,
       title: Option[NonEmptyString],
-      annotations: Option[ToolAnnotations],
-      outputSchema: Option[JsonObject]
+      annotations: Option[ToolAnnotations]
   ):
-    def apply[F[_]](
-        handler: A => F[CallToolResult]
-    )(using F: ApplicativeThrow[F], decoder: Decoder[A], schema: JsonSchemaOf[A]): McpTool[F] =
+    def apply[F[_], O](
+        handler: A => F[O]
+    )(using F: ApplicativeThrow[F], decoder: Decoder[A], schema: JsonSchemaOf[A], output: ToolOutput[O]): McpTool[F] =
       val input = schema.schema.as[ObjectSchema].getOrElse(ObjectSchema.empty)
       McpTool(
         definition = Tool(
@@ -49,13 +50,13 @@ object McpTool:
           inputSchema = input,
           title = title,
           description = Some(description),
-          outputSchema = outputSchema,
+          outputSchema = output.schema,
           annotations = annotations
         ),
         invoke = json =>
           decoder.decodeJson(json) match
             case Right(arguments) =>
-              handler(arguments).handleError(error => CallToolResult.failed(s"$name failed: ${error.getMessage}"))
+              handler(arguments).map(output.result).handleError(error => CallToolResult.failed(s"$name failed: ${error.getMessage}"))
             // A refinement violation is the model's mistake to correct, so it
             // comes back as a tool error carrying Iron's own message.
             case Left(failure) => F.pure(CallToolResult.failed(failure.message))

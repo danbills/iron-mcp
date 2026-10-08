@@ -1,16 +1,15 @@
 package ironmcp
 package weather
 
-import cats.MonadThrow
+import cats.{MonadThrow, Show}
 import cats.free.Free
 import cats.~>
 import io.circe.Decoder
 import io.circe.derivation.{Configuration, ConfiguredEncoder}
-import io.circe.syntax.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.circe.given
 import ironmcp.protocol.*
-import ironmcp.schema.JsonSchemaOf
+import ironmcp.schema.{ConfiguredJsonSchemaOf, JsonSchemaOf}
 import ironmcp.server.*
 
 // --- tool arguments (the input schema) --------------------------------------
@@ -19,11 +18,18 @@ final case class GetForecast(latitude: Latitude, longitude: Longitude) derives D
 final case class GetConditions(latitude: Latitude, longitude: Longitude) derives Decoder, JsonSchemaOf
 final case class GetAlerts(latitude: Latitude, longitude: Longitude, event: Option[Event]) derives Decoder, JsonSchemaOf
 
-// --- tool results (the structured content) ----------------------------------
+// --- tool results (the structured content and the output schema) ----------
+//
+// Each result type is both what the tool encodes and what it advertises as its
+// outputSchema. Member names are snake_case on the wire, so the schemas derive
+// through the same Configuration as the encoders.
 
 given Configuration = Configuration.default.withSnakeCaseMemberNames
 
-final case class ForecastResult(headline: String, periods: List[String]) derives ConfiguredEncoder
+final case class ForecastResult(headline: String, periods: List[String]) derives ConfiguredEncoder, ConfiguredJsonSchemaOf
+
+object ForecastResult:
+  given Show[ForecastResult] = r => (r.headline +: r.periods).mkString("\n")
 
 final case class ConditionsResult(
     station: String,
@@ -37,7 +43,22 @@ final case class ConditionsResult(
     gustKmh: Option[Double],
     humidityPct: Option[Double],
     visibilityM: Option[Double]
-) derives ConfiguredEncoder
+) derives ConfiguredEncoder, ConfiguredJsonSchemaOf
+
+object ConditionsResult:
+  given Show[ConditionsResult] = c =>
+    List(
+      s"Conditions near ${c.station} at ${c.time}:",
+      s"  Sky:       ${c.sky}",
+      s"  Pressure:  ${fmt(c.pressureHpa, " hPa", 1)}  (trend: ${c.pressureTrend})",
+      s"  Temp:      ${fmt(c.tempC, "°C", 0)}  Dewpoint: ${fmt(c.dewpointC, "°C", 0)}",
+      s"  Wind:      ${fmt(c.windKmh, " km/h", 0)}  Gust: ${fmt(c.gustKmh, " km/h", 0)}",
+      s"  Humidity:  ${fmt(c.humidityPct, "%", 0)}  Visibility: ${fmt(c.visibilityM, " m", 0)}"
+    ).mkString("\n")
+
+  /** Format an optional measurement value, or "n/a" when absent. */
+  private def fmt(v: Option[Double], unit: String, dec: Int): String =
+    v.map(d => ("%." + dec + "f").format(d) + unit).getOrElse("n/a")
 
 final case class AlertResult(
     event: String,
@@ -46,9 +67,16 @@ final case class AlertResult(
     effective: String,
     expires: String,
     headline: String
-) derives ConfiguredEncoder
+) derives ConfiguredEncoder, ConfiguredJsonSchemaOf
 
-final case class AlertsResult(count: Int, alerts: List[AlertResult]) derives ConfiguredEncoder
+/** The active alerts, and the event-name filter that selected them, if any. */
+final case class AlertsResult(count: Int, alerts: List[AlertResult], filter: Option[String])
+    derives ConfiguredEncoder, ConfiguredJsonSchemaOf
+
+object AlertsResult:
+  given Show[AlertsResult] = r =>
+    if r.alerts.isEmpty then s"No active alerts near this location${r.filter.map(e => s" for $e").getOrElse("")}."
+    else ("Active alerts near this location:" +: r.alerts.map(a => s"  ${a.event}")).mkString("\n")
 
 /** The weather tools. Each is a program over [[Nws]] — a description of the requests it makes — so the same tool
   * runs against weather.gov ([[NwsHttp4s]]) or canned answers, and composes with other algebras in a larger
@@ -56,7 +84,7 @@ final case class AlertsResult(count: Int, alerts: List[AlertResult]) derives Con
   */
 object WeatherTools:
 
-  def forecast[G[_]](args: GetForecast)(using N: Nws[G]): Free[G, CallToolResult] =
+  def forecast[G[_]](args: GetForecast)(using N: Nws[G]): Free[G, ForecastResult] =
     for
       pt    <- N.point(args.latitude, args.longitude)
       fcast <- N.forecast(pt.forecast)
@@ -65,26 +93,25 @@ object WeatherTools:
         val temp = p.temperature.map(t => s"$t°F").getOrElse("")
         s"${p.name.getOrElse("?")}: ${p.shortForecast.getOrElse("")} $temp".trim
       }
-      val result = ForecastResult("NWS forecast", lines)
-      CallToolResult.structured((result.headline +: lines).mkString("\n"), result.asJson)
+      ForecastResult("NWS forecast", lines)
 
-  def conditions[G[_]](args: GetConditions)(using N: Nws[G]): Free[G, CallToolResult] =
+  def conditions[G[_]](args: GetConditions)(using N: Nws[G]): Free[G, Either[String, ConditionsResult]] =
     N.point(args.latitude, args.longitude).flatMap { pt =>
       pt.observationStations match
-        case None => Free.pure(CallToolResult.failed("get_conditions failed: no observation-stations url for this point"))
+        case None => Free.pure(Left("get_conditions failed: no observation-stations url for this point"))
         case Some(link) =>
           N.stations(link).flatMap {
-            case Nil => Free.pure(CallToolResult.failed("get_conditions failed: no observing station found near this point"))
+            case Nil => Free.pure(Left("get_conditions failed: no observing station found near this point"))
             case station :: _ =>
               for
                 obs     <- N.latestObservation(station.stationIdentifier)
                 // The trend is a nicety: a failed history fetch leaves it empty rather than failing the tool.
                 history <- N.observationHistory(station.stationIdentifier, 12)
-              yield renderConditions(station, obs, history.getOrElse(Nil))
+              yield Right(conditionsOf(station, obs, history.getOrElse(Nil)))
           }
     }
 
-  def alerts[G[_]](args: GetAlerts)(using N: Nws[G]): Free[G, CallToolResult] =
+  def alerts[G[_]](args: GetAlerts)(using N: Nws[G]): Free[G, AlertsResult] =
     N.activeAlerts(args.latitude, args.longitude, args.event).map { found =>
       val alerts = found.map { p =>
         AlertResult(
@@ -96,10 +123,7 @@ object WeatherTools:
           headline = p.headline.getOrElse("-")
         )
       }
-      val text =
-        if alerts.isEmpty then s"No active alerts near this location${args.event.map(e => s" for $e").getOrElse("")}."
-        else ("Active alerts near this location:" +: alerts.map(a => s"  ${a.event}")).mkString("\n")
-      CallToolResult.structured(text, AlertsResult(alerts.size, alerts).asJson)
+      AlertsResult(alerts.size, alerts, args.event.map(e => e: String))
     }
 
   /** The tools, run through `nws`. Handler failures become `isError` results (see [[McpTool]]), so `F` needs
@@ -125,14 +149,14 @@ object WeatherTools:
       )(alerts[NwsOp](_).foldMap(nws))
     )
 
-  // --- rendering ---------------------------------------------------------------
+  // --- results -----------------------------------------------------------------
 
-  private def renderConditions(
+  private def conditionsOf(
       station: StationProperties,
       obs: ObservationProperties,
       history: List[ObservationProperties]
-  ): CallToolResult =
-    val c = ConditionsResult(
+  ): ConditionsResult =
+    ConditionsResult(
       station = station.name.getOrElse(s"station ${station.stationIdentifier}"),
       time = obs.timestamp.getOrElse("unknown time"),
       sky = obs.textDescription.filter(_.nonEmpty).getOrElse("unknown"),
@@ -145,21 +169,8 @@ object WeatherTools:
       humidityPct = num(obs.relativeHumidity),
       visibilityM = num(obs.visibility)
     )
-    val text = List(
-      s"Conditions near ${c.station} at ${c.time}:",
-      s"  Sky:       ${c.sky}",
-      s"  Pressure:  ${fmt(c.pressureHpa, " hPa", 1)}  (trend: ${c.pressureTrend})",
-      s"  Temp:      ${fmt(c.tempC, "°C", 0)}  Dewpoint: ${fmt(c.dewpointC, "°C", 0)}",
-      s"  Wind:      ${fmt(c.windKmh, " km/h", 0)}  Gust: ${fmt(c.gustKmh, " km/h", 0)}",
-      s"  Humidity:  ${fmt(c.humidityPct, "%", 0)}  Visibility: ${fmt(c.visibilityM, " m", 0)}"
-    ).mkString("\n")
-    CallToolResult.structured(text, c.asJson)
 
   private def num(m: Option[Measurement]): Option[Double] = m.flatMap(_.value)
-
-  /** Format an optional measurement value, or "n/a" when absent. */
-  private def fmt(v: Option[Double], unit: String, dec: Int): String =
-    v.map(d => ("%." + dec + "f").format(d) + unit).getOrElse("n/a")
 
   /** Describe the change across a series of pressure readings (hPa). */
   private[weather] def pressureTrend(readings: List[Double]): String =

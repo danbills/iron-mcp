@@ -2,6 +2,7 @@ package ironmcp
 package schema
 
 import io.circe.Json
+import io.circe.derivation.Configuration
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.any.{DescribedAs, Not, StrictEqual}
 import io.github.iltotore.iron.constraint.collection.Length
@@ -69,14 +70,29 @@ object JsonSchemaOf:
     * from their own instances, `required` from which fields are `Option`.
     */
   inline given derived[A](using mirror: Mirror.ProductOf[A]): JsonSchemaOf[A] =
-    val labels   = constValueTuple[mirror.MirroredElemLabels].toList.map(_.toString)
+    instance(product[A](identity))
+
+  /** The object schema of a case class whose property names are its field names passed through `rename`. */
+  private[schema] inline def product[A](rename: String => String)(using mirror: Mirror.ProductOf[A]): Json =
+    val labels   = constValueTuple[mirror.MirroredElemLabels].toList.map(label => rename(label.toString))
     val elements = summonAll[Tuple.Map[mirror.MirroredElemTypes, JsonSchemaOf]].toList
       .map(_.asInstanceOf[JsonSchemaOf[?]])
     val fields = labels.zip(elements)
-    instance(
-      Json.obj(
-        "type"       -> Json.fromString("object"),
-        "properties" -> Json.obj(fields.map((label, element) => label -> element.schema)*),
-        "required"   -> Json.arr(fields.collect { case (label, e) if e.required => Json.fromString(label) }*)
-      )
+    Json.obj(
+      "type"       -> Json.fromString("object"),
+      "properties" -> Json.obj(fields.map((label, element) => label -> element.schema)*),
+      "required"   -> Json.arr(fields.collect { case (label, e) if e.required => Json.fromString(label) }*)
     )
+
+/** [[JsonSchemaOf]] for a case class whose circe codec is derived with a `Configuration`
+  * (`derives ConfiguredEncoder, ConfiguredJsonSchemaOf`): property names go through the
+  * same `transformMemberNames`, so the schema names the keys the encoder writes.
+  */
+trait ConfiguredJsonSchemaOf[A] extends JsonSchemaOf[A]
+
+object ConfiguredJsonSchemaOf:
+  inline def derived[A](using configuration: Configuration, mirror: Mirror.ProductOf[A]): ConfiguredJsonSchemaOf[A] =
+    instance(JsonSchemaOf.product[A](configuration.transformMemberNames))
+
+  def instance[A](json: Json): ConfiguredJsonSchemaOf[A] = new ConfiguredJsonSchemaOf[A]:
+    val schema: Json = json
