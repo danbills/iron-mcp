@@ -49,6 +49,21 @@ when the tool can fail at its job (`Left` becomes an `isError` result), or a
 encoded with a circe `Configuration` derive `ConfiguredJsonSchemaOf`, so a
 snake_case encoder gets a snake_case schema.
 
+### Enums, opaque types and strict schemas
+
+Sums derive too, and each schema describes what the matching circe codec writes:
+
+| Derive | circe codec | Schema |
+|---|---|---|
+| `JsonSchemaOf` | `Codec.AsObject` | `oneOf`, one object per case keyed by its name |
+| `ConfiguredJsonSchemaOf` | `ConfiguredCodec` with a discriminator | `oneOf`, each case's fields plus `kind: {"const": "Case"}` |
+| `ConfiguredEnumJsonSchemaOf` | `ConfiguredEnumCodec` | `{"type": "string", "enum": [...]}` (cases with fields don't compile) |
+
+An opaque Iron `RefinedType` (`object Port extends RefinedType[Int, Interval.Closed[1, 65535]]`)
+has the schema of the type it wraps. `JsonSchemaOf.strict(schema)` rewrites a schema
+for OpenAI's strict structured outputs: every object closed, every property
+required, optional ones nullable, `oneOf` as `anyOf`.
+
 ## Why not the official Java SDK
 
 Two reasons, in order of weight:
