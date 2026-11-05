@@ -256,7 +256,9 @@ from a null one, and several hosts reject `null` where they expect omission.
 | `server/McpServer.scala` | dispatch, version checks, capability derivation |
 | `server/McpTool.scala`, `server/Interaction.scala` | typed tools; `McpTool.interactive`, `Elicit`, `RequestStateCodec` |
 | `transport/{Wire,Stdio}.scala` | newline-delimited JSON-RPC on stdin/stdout |
-| `modules/http` (`iron-mcp-http`) | Streamable HTTP on http4s ember, JVM-only |
+| `client/McpClient.scala` | the client: typed calls, `callToolGathering`, `InputHandlers` |
+| `client/{ClientTransport,StdioClient}.scala` | in-process, stdio framing, child processes |
+| `modules/http` (`iron-mcp-http`) | Streamable HTTP on http4s ember, server and client, JVM-only |
 
 ### Streamable HTTP
 
@@ -275,6 +277,39 @@ default (`403` otherwise, against DNS rebinding), and bodies over 4 MiB are
 refused unread. `McpHttp.routesFor(config)(request => ...)` builds the server per
 request, which is how an access token's claims reach the tools.
 
+### A client
+
+```scala
+StdioClient.spawn[IO]("./my-server").use { transport =>   // or McpHttpClient.ember(uri"http://localhost:5000/mcp")
+  for
+    client <- McpClient[IO](transport)
+    tools  <- client.allTools
+    result <- client.callTool("greet", JsonObject("name" -> "Ada".asJson, "times" -> 2.asJson))
+  yield result
+}
+```
+
+Every request carries the 2026-07-28 `_meta` envelope, so there is no handshake.
+Calls return the protocol's own result types; a JSON-RPC error is raised as
+`McpClientError.Rpc`, and an HTTP rejection as `McpClientError.Http` with its
+`WWW-Authenticate` challenges (`McpHttpClient.challenges` parses them).
+
+Calls that may answer `input_required` return `A | InputRequiredResult` for a
+caller that runs its own retry loop. `callToolGathering` runs it for you with
+the client's `InputHandlers`, which also declare its capabilities:
+
+```scala
+McpClient[IO](transport, handlers = InputHandlers.elicitation(params => askTheUser(params)))
+  .flatMap(_.callToolGathering("book_meeting", args, maxRounds = 10, deadline = 2.minutes))
+```
+
+The deadline is one timeout around the whole exchange, so it also cancels a
+prompt still waiting on the user. `ClientTransport.inProcess(server)` runs a
+client against a server in the same process, through the wire encoding, which
+is how the tests work; `ClientTransport.lines` is the stdio framing over any
+pair of streams. The demo binary has a client mode: `ironmcp.demo.Main client
+<server command>`.
+
 ## Using it
 
 ```scala
@@ -287,7 +322,7 @@ Published for the JVM and Scala Native 0.5 from the same source.
 
 ```bash
 sbt "coreJVM/Test/testFull"   # protocol and schema suites
-sbt "http/Test/testFull"      # Streamable HTTP, in memory
+sbt "http/Test/testFull"      # Streamable HTTP server and client, in memory
 sbt "weather/Test/testFull" "nasa/Test/testFull"   # the example tools, offline
 sbt "demoJVM/run"             # stdio server on the JVM
 sbt "demoNative/nativeLink"   # native binary
@@ -332,13 +367,13 @@ http4s 0.23.37 (Ember) and cats-free 2.13.0.
 ## Status
 
 The protocol layer, dispatcher and stdio transport are complete and tested,
-on the JVM and Scala Native; Streamable HTTP and elicitation (MRTR) on the JVM. Two example servers call real APIs:
+on the JVM and Scala Native, and so is the client (stdio and in-process); Streamable HTTP, server and client, and elicitation (MRTR) on the JVM. Two example servers call real APIs:
 `modules/weather` (weather.gov forecast, conditions and alerts; no key) and
 `modules/nasa` (Astronomy Picture of the Day; `NASA_API_KEY`). Their tools are
 `Free` programs over request algebras, tested offline.
 
 Not yet built: resource, prompt and completion providers beyond the traits,
-SSE responses (progress and log notifications), a client, the Tasks extension,
+SSE responses from the server (the client reads them), a legacy-era (`initialize`) client, the Tasks extension,
 and capability providers such as email, web search or computer use.
 
 ## Releasing

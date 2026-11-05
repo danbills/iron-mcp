@@ -18,7 +18,6 @@ import org.http4s.server.Server
 import org.typelevel.ci.CIString
 
 import java.nio.charset.StandardCharsets.UTF_8
-import java.util.Base64
 
 /** The Streamable HTTP binding of revision 2026-07-28, stateless.
   *
@@ -63,9 +62,9 @@ object McpHttp:
 
   private val supported: String = ironmcp.protocol.LatestProtocolVersion
 
-  val ProtocolVersionHeader: CIString = CIString("MCP-Protocol-Version")
-  val MethodHeader: CIString          = CIString("Mcp-Method")
-  val NameHeader: CIString            = CIString("Mcp-Name")
+  val ProtocolVersionHeader: CIString = McpHeaders.ProtocolVersion
+  val MethodHeader: CIString          = McpHeaders.Method
+  val NameHeader: CIString            = McpHeaders.Name
 
   /** Routes for a server that is the same for every request. */
   def routes[F[_]: Concurrent](server: McpServer[F], config: Config): HttpRoutes[F] =
@@ -166,18 +165,12 @@ object McpHttp:
               // The body has no name/uri to mirror; the server will report the missing param.
               case None => None
               case Some(Some(expected)) =>
-                header(NameHeader).map(decodeSentinel) match
+                header(NameHeader).map(McpHeaders.decode) match
                   case None => Some(mismatch("the Mcp-Name header is required"))
                   case Some(None) => Some(mismatch("the Mcp-Name header is not valid base64"))
                   case Some(Some(value)) if value != expected =>
                     Some(mismatch(s"Mcp-Name header value '$value' does not match body value '$expected'"))
                   case Some(Some(_)) => None
-
-  /** `=?base64?...?=` carries a value that is not plain header-safe ASCII. */
-  private[http] def decodeSentinel(raw: String): Option[String] =
-    if raw.startsWith("=?base64?") && raw.endsWith("?=") && raw.length >= 11 then
-      scala.util.Try(String(Base64.getDecoder.decode(raw.substring(9, raw.length - 2)), UTF_8)).toOption
-    else Some(raw)
 
   private def mismatch(message: String): JsonRpcError =
     JsonRpcError(ErrorCode.HeaderMismatch, message.asInstanceOf[NonEmptyString])

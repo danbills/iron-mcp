@@ -10,7 +10,8 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
   - `server/` — `Providers.scala`, `McpServer.scala` (stateless dispatch), `McpTool.scala` (typed tools, `ToolSet`); all polymorphic in `F[_]`
   - `server/Interaction.scala` — `McpTool.interactive` support: `ToolContext`, `Elicit`, `RequestStateCodec` (HMAC-sealed `requestState`; `HmacSha256.scala` is plain Scala because Scala Native has no `javax.crypto`)
   - `transport/` — `Wire.scala`, `Stdio.scala`
-- `modules/http/` — `iron-mcp-http`: Streamable HTTP (`McpHttp`) on http4s ember, JVM-only
+  - `client/` — `McpClient.scala` (typed calls, `callToolGathering`, `InputHandlers`), `ClientTransport.scala` (`inProcess`, `lines`), `StdioClient.scala` (child processes), `McpClientError.scala`
+- `modules/http/` — `iron-mcp-http`, JVM-only: `McpHttp` (server), `McpHttpClient` (client), `McpHeaders` (the mirrored headers and their base64 rule)
 - `modules/core/src/test/` — munit test suites
 - `modules/demo/` — runnable stdio demo server
 - `modules/weather/` — example MCP server over the NWS (weather.gov) API, JVM-only: `Nws.scala` (models + `NwsOp` algebra + `Nws[G]` smart constructors), `NwsHttp4s.scala` (interpreter), `WeatherTools.scala` (tools as `Free` programs), `Main.scala` (wiring)

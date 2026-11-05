@@ -91,9 +91,10 @@ lazy val http = (project in file("modules/http"))
   .dependsOn(core.jvm)
   .settings(
     name        := "iron-mcp-http",
-    description := "Streamable HTTP transport (revision 2026-07-28, stateless) for iron-mcp, on http4s ember.",
+    description := "Streamable HTTP (revision 2026-07-28, stateless) for iron-mcp, server and client, on http4s ember.",
     libraryDependencies ++= Seq(
       "org.http4s"    %% "http4s-ember-server" % http4sVersion,
+      "org.http4s"    %% "http4s-ember-client" % http4sVersion,
       "org.scalameta" %% "munit"               % munitVersion   % Test,
       "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
     )
