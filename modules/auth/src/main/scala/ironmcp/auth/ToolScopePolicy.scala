@@ -23,6 +23,9 @@ trait ToolScopePolicy:
     if required.subsetOf(granted) then Right(())
     else Left(required)
 
+  /** Whether a caller holding `granted` may call the tool, and so should see it listed. */
+  def visible(toolName: String, granted: Set[String]): Boolean = check(toolName, granted).isRight
+
 object ToolScopePolicy:
 
   /** Empty policy where all tools are accessible to any authenticated caller. */

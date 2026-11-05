@@ -69,7 +69,7 @@ val simulationTool = McpTool[SimulationArgs]("run_simulation", "Runs Monte Carlo
 //     icons = None,
 //     _meta = None
 //   ),
-//   invoke = ironmcp.server.McpTool$Builder$$Lambda/0x00000000409968b8@78fa6e01
+//   invoke = ironmcp.server.McpTool$Builder$$Lambda/0x000000009296a770@116b4eb8
 // )
 
 val fastEchoTool = McpTool[SimulationArgs]("quick_ping", "Instant response") { args =>
@@ -93,7 +93,7 @@ val fastEchoTool = McpTool[SimulationArgs]("quick_ping", "Instant response") { a
 //     icons = None,
 //     _meta = None
 //   ),
-//   invoke = ironmcp.server.McpTool$Builder$$Lambda/0x00000000409968b8@71c965ce
+//   invoke = ironmcp.server.McpTool$Builder$$Lambda/0x000000009296a770@76182237
 // )
 ```
 
@@ -118,18 +118,18 @@ val serverIO: IO[TaskServer[IO]] = for {
 // serverIO: IO[TaskServer[[A >: Nothing <: Any] =>> IO[A]]] = Map(
 //   ioe = Map(
 //     ioe = Delay(
-//       thunk = cats.effect.IO$$$Lambda/0x00000000409b8230@77ef56fe,
+//       thunk = cats.effect.IO$$$Lambda/0x000000009298ba50@7cd46301,
 //       event = cats.effect.tracing.TracingEvent$StackTrace
 //     ),
-//     f = ironmcp.tasks.TaskStore$$$Lambda/0x0000000040a0eca8@4feb51d6,
+//     f = ironmcp.tasks.TaskStore$$$Lambda/0x00000000929deca8@5544e0d9,
 //     event = cats.effect.tracing.TracingEvent$StackTrace
 //   ),
-//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000040a14600@619b8141,
+//   f = repl.MdocSession$MdocApp$$Lambda/0x00000000929e4600@188da0e2,
 //   event = cats.effect.tracing.TracingEvent$StackTrace
 // )
 
 val taskServer = serverIO.unsafeRunSync()
-// taskServer: TaskServer[[A >: Nothing <: Any] =>> IO[A]] = ironmcp.tasks.TaskServer@db632fd
+// taskServer: TaskServer[[A >: Nothing <: Any] =>> IO[A]] = ironmcp.tasks.TaskServer@db70584
 ```
 
 ---
@@ -155,16 +155,16 @@ val transparentRun: IO[CallToolResult] = for {
 //   ioe = FlatMap(
 //     ioe = Map(
 //       ioe = Delay(
-//         thunk = cats.effect.IO$$$Lambda/0x00000000409b8230@549e072a,
+//         thunk = cats.effect.IO$$$Lambda/0x000000009298ba50@40fba126,
 //         event = cats.effect.tracing.TracingEvent$StackTrace
 //       ),
-//       f = ironmcp.client.McpClient$$$Lambda/0x0000000040a3e4a8@59cbe3e1,
+//       f = ironmcp.client.McpClient$$$Lambda/0x0000000092a5af18@1f681e53,
 //       event = cats.effect.tracing.TracingEvent$StackTrace
 //     ),
-//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000040a3eae8@4cbb7cef,
+//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000092a5b558@6d58674f,
 //     event = cats.effect.tracing.TracingEvent$StackTrace
 //   ),
-//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000040a80000@71977db0,
+//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000092a5c000@18a740b6,
 //   event = cats.effect.tracing.TracingEvent$StackTrace
 // )
 
@@ -200,16 +200,16 @@ val fastRun: IO[CallToolResult] = for {
 //   ioe = FlatMap(
 //     ioe = Map(
 //       ioe = Delay(
-//         thunk = cats.effect.IO$$$Lambda/0x00000000409b8230@7f471a4b,
+//         thunk = cats.effect.IO$$$Lambda/0x000000009298ba50@124d5cf3,
 //         event = cats.effect.tracing.TracingEvent$StackTrace
 //       ),
-//       f = ironmcp.client.McpClient$$$Lambda/0x0000000040a3e4a8@1955fffa,
+//       f = ironmcp.client.McpClient$$$Lambda/0x0000000092a5af18@2190c4a7,
 //       event = cats.effect.tracing.TracingEvent$StackTrace
 //     ),
-//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000040a3eae8@32550350,
+//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000092a5b558@5ffc5867,
 //     event = cats.effect.tracing.TracingEvent$StackTrace
 //   ),
-//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000040a80e28@57555ba9,
+//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000092a5ce28@1d60188,
 //   event = cats.effect.tracing.TracingEvent$StackTrace
 // )
 
@@ -252,37 +252,37 @@ val cancelRun: IO[(CancelTaskResult, GetTaskResult)] = for {
 //   ioe = FlatMap(
 //     ioe = Map(
 //       ioe = Delay(
-//         thunk = cats.effect.IO$$$Lambda/0x00000000409b8230@1007864a,
+//         thunk = cats.effect.IO$$$Lambda/0x000000009298ba50@79047f85,
 //         event = cats.effect.tracing.TracingEvent$StackTrace
 //       ),
-//       f = ironmcp.client.McpClient$$$Lambda/0x0000000040a3e4a8@261b119f,
+//       f = ironmcp.client.McpClient$$$Lambda/0x0000000092a5af18@5e1629fe,
 //       event = cats.effect.tracing.TracingEvent$StackTrace
 //     ),
-//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000040a3eae8@3c4ed98f,
+//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000092a5b558@63947d3b,
 //     event = cats.effect.tracing.TracingEvent$StackTrace
 //   ),
-//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000040a81878@413b45bc,
+//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000092a5d878@527ffa80,
 //   event = cats.effect.tracing.TracingEvent$StackTrace
 // )
 
 val (cancelRes, finalSnapshot) = cancelRun.unsafeRunSync()
 // cancelRes: CancelTaskResult = CancelTaskResult(
-//   taskId = "task-1a1addf1cd0-3f36111993f0bc90",
+//   taskId = "task-1a1adee1398-65a9448e95305eb0",
 //   status = Cancelled
 // )
 // finalSnapshot: GetTaskResult = GetTaskResult(
-//   taskId = "task-1a1addf1cd0-3f36111993f0bc90",
+//   taskId = "task-1a1adee1398-65a9448e95305eb0",
 //   status = Cancelled,
 //   pollIntervalMs = Some(50L),
 //   ttlMs = Some(300000L),
-//   createdAt = Some(1793918442L),
-//   lastUpdatedAt = Some(1793918442L),
+//   createdAt = Some(1793919423L),
+//   lastUpdatedAt = Some(1793919423L),
 //   result = None,
 //   error = None,
 //   inputRequest = None
 // )
 println(s"Cancelled task: ${cancelRes.taskId}, status: ${finalSnapshot.status}")
-// Cancelled task: task-1a1addf1cd0-3f36111993f0bc90, status: Cancelled
+// Cancelled task: task-1a1adee1398-65a9448e95305eb0, status: Cancelled
 ```
 
 ---

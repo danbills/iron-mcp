@@ -310,6 +310,26 @@ def createValidator(httpClient: Client[IO], jwksUri: Uri): IO[TokenValidator[IO]
 
 ---
 
+### Hiding Tools the Token Cannot Call
+
+The C# SDK filters `tools/list` by `[Authorize]`. Here, `ScopedTools` does the same thing. Build it per request from the validated claims, inside `routesFor`:
+
+```scala mdoc:silent
+def scopedRoutes(validator: TokenValidator[IO]) =
+  McpAuthServer.routesFor(validator, authConfig) { (_, claims) =>
+    IO.pure(Right(McpServer[IO](
+      info = Implementation(name = "reports", version = "1.0.0"),
+      tools = Some(ScopedTools(ToolSet.of(tool), authConfig.scopePolicy, claims))
+    )))
+  }
+```
+
+A token with only `mcp:read` sees only the tools that `mcp:read` allows. Because the list depends on the token, it is sent with `cacheScope: "private"`.
+
+Hiding a tool keeps it away from the model, but it does not protect the tool. A client can still call a tool it never saw listed. That call gets the same `403 insufficient_scope` challenge as before, so the scope policy at execution time is still what protects the tool.
+
+---
+
 ### Using `StepUpClient` for Automatic Scope-Union Retries
 
 ```scala mdoc:silent
