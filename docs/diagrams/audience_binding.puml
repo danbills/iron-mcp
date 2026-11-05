@@ -1,0 +1,34 @@
+@startuml audience_binding
+autonumber
+skinparam style strictuml
+skinparam sequenceMessageAlign center
+skinparam boxPadding 10
+skinparam participantPadding 15
+
+actor "Client / Attacker" as Client
+box "iron-mcp Resource Server (:5309)" #F8F9FA
+    participant "McpAuthServer\n(resource: http://localhost:5309/mcp)" as RS
+end box
+box "Authorization Server" #E8F4F8
+    participant "Keycloak AS\n(issues genuine tokens)" as AS
+end box
+
+== RFC 8707 Audience Check — Defeating the Downstream Trap (§9.2.4) ==
+note over Client, AS
+  Client obtains a genuine token minted for a different downstream service:
+  Token claims: { iss: "...", aud: ["https://other-service.internal/api"], ... }
+  The cryptographic signature by Keycloak is 100% genuine!
+end note
+
+Client -> RS: POST /mcp\nAuthorization: Bearer <other-service-token>\nMcp-Method: tools/call\nMcp-Name: read_summary
+
+RS -> RS: 1. Verify RS256 signature against Keycloak JWKS: OK (genuine!)\n2. Check expiration & issuer: OK\n3. Check RFC 8707 audience claim: aud=["https://other-service.internal/api"]
+note over RS #FFEAEA
+  AUDIENCE MISMATCH!
+  The token is genuine, but was minted for another resource.
+  Accepting this would allow downstream services to impersonate callers.
+end note
+
+RS --> Client: 401 Unauthorized\nWWW-Authenticate: Bearer error="invalid_token",\n  error_description="Token audience is 'https://other-service.internal/api' — this is a token for a different resource. This server only accepts tokens minted for 'http://localhost:5309/mcp' (RFC 8707 resource indicator).",\n  resource_metadata="http://localhost:5309/.well-known/oauth-protected-resource/mcp"
+
+@enduml

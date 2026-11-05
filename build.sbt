@@ -5,6 +5,7 @@ val ironVersion       = "3.3.2"
 val circeVersion      = "0.14.16"
 val catsEffectVersion = "3.7.0"
 val http4sVersion     = "0.23.37"
+val otel4sVersion     = "1.1.0"
 val munitVersion      = "1.3.5"
 val munitCeVersion    = "2.2.0"
 
@@ -100,6 +101,47 @@ lazy val http = (project in file("modules/http"))
     )
   )
 
+lazy val otel = (project in file("modules/otel"))
+  .dependsOn(core.jvm, http)
+  .settings(
+    name        := "iron-mcp-otel",
+    description := "OpenTelemetry instrumentation for iron-mcp, adhering to MCP GenAI semantic conventions, with W3C trace propagation, error ladder metrics, and cost histograms.",
+    libraryDependencies ++= Seq(
+      "org.typelevel"    %% "otel4s-core"               % otel4sVersion,
+      "org.typelevel"    %% "otel4s-oteljava"           % otel4sVersion,
+      "io.opentelemetry" %  "opentelemetry-sdk-testing" % "1.64.0"       % Test,
+      "org.scalameta"    %% "munit"                     % munitVersion   % Test,
+      "org.typelevel"    %% "munit-cats-effect"         % munitCeVersion % Test
+    )
+  )
+
+lazy val auth = (project in file("modules/auth"))
+  .dependsOn(core.jvm, http)
+  .settings(
+    name        := "iron-mcp-auth",
+    description := "OAuth 2.1 and Step-Up authorization for iron-mcp (RFC 9728, RFC 8707, RFC 6750, SEP-2350) with Keycloak coordination.",
+    libraryDependencies ++= Seq(
+      "org.http4s"    %% "http4s-ember-server" % http4sVersion,
+      "org.http4s"    %% "http4s-ember-client" % http4sVersion,
+      "org.http4s"    %% "http4s-circe"        % http4sVersion,
+      "org.scalameta" %% "munit"               % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
+    )
+  )
+
+lazy val docs = (project in file("modules/docs"))
+  .dependsOn(core.jvm, http, auth)
+  .settings(
+    name := "iron-mcp-docs",
+    publish / skip := true,
+    fork := true,
+    libraryDependencies ++= Seq(
+      "org.scalameta"  %% "mdoc"            % "2.9.2",
+      "org.scala-lang" %% "scala3-compiler" % scala3Version
+    ),
+    dependencyOverrides += "org.scala-lang" %% "scala3-compiler" % scala3Version
+  )
+
 lazy val weather = (project in file("modules/weather"))
   .dependsOn(core.jvm)
   .settings(
@@ -137,5 +179,5 @@ lazy val nasa = (project in file("modules/nasa"))
   )
 
 lazy val root = (project in file("."))
-  .aggregate(core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa)
+  .aggregate(core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, otel, auth)
   .settings(name := "iron-mcp", publish / skip := true)
