@@ -65,5 +65,5 @@ Pull requests should name the protocol area changed, justify any new hand-writte
 - Do not re-enable `LTO.thin` in the Native build (breaks linking); tool failures return `isError: true` results, never JSON-RPC errors.
 - `McpServer.handle` must stay a pure function of one message with no per-client state. Per-request context (auth claims) comes in through `McpHttp.routesFor`, which builds a server per request.
 - Never trust `requestState` unsealed: interactive tools take a `RequestStateCodec`; do not add a default `given` for `unprotected`.
-- Keep core free of `IO` and of cats-free: ask for the weakest typeclass that works (`Applicative` for dispatch, `ApplicativeThrow` for tools, `Async` + `LiftIO` only in `Stdio`).
+- Keep core free of `IO` and of cats-free: ask for the weakest typeclass that works (`Applicative` for dispatch, `ApplicativeThrow` for tools, `MonadThrow` for `McpClient`, `Concurrent` for `ClientTransport.lines`, `Async` only for real stdio and process spawning). On Scala Native, `fs2.io.stdin/stdout/stderr` go through epoll, which refuses regular files: use blocking `System.in/out/err` (see `Stdio.serve`, `StdioClient`).
 - Outbound calls in example tools go through an algebra and interpreter, not inline http4s in the handler.

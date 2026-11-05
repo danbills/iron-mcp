@@ -33,7 +33,8 @@ object InputRequest:
 final case class ElicitFormParams(
     message: String,
     requestedSchema: ObjectSchema,
-    mode: String = "form"
+    // Optional on the wire: the spec's own examples sometimes leave it out.
+    mode: Option[String] = Some("form")
 ) derives Codec.AsObject
 
 enum ElicitAction:

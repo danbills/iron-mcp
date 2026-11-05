@@ -202,7 +202,9 @@ the model can read and correct it. An Iron violation lands there too:
 | `McpServer[F]` (dispatch) | `Applicative` |
 | `ToolSet[F]` | `Applicative` |
 | `McpTool[A](...) { handler }` | `ApplicativeThrow`: a handler that fails becomes an `isError` result naming the tool |
-| `Stdio.serve` | `Async` + `LiftIO` (fs2 drives stdin/stdout through `IO` on Native) |
+| `Stdio.serve`, `StdioClient.spawn` | `Async` (blocking stdin/stdout, a child process) |
+| `Stdio.pipe`, `McpClient` | `MonadThrow` (+ `Ref.Make` for the client's request ids) |
+| `ClientTransport.lines` | `Concurrent` (matching replies to requests) |
 
 `McpTool[Greet](...)` infers `F` from the handler, so `IO` callers write the same
 code as before, and the tests run whole servers in plain `Either[Throwable, *]`.
