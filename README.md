@@ -89,8 +89,9 @@ val book = McpTool.interactive[BookArgs]("book_meeting", "Books a room.") { (arg
 ```
 
 The form's `requestedSchema` is derived from `Details`, and `ctx.accepted` decodes
-the user's answer back into it with every refinement checked. `Titled["..."]` and
-`Default[v]` add `title` and `default` keywords and constrain nothing.
+the user's answer back into it with every refinement checked. `Titled["..."]`,
+`Default[v]` and `Format["date"]` add `title`, `default` and `format` keywords and
+constrain nothing.
 
 `requestState` travels through the client, which could edit it to skip a step.
 The `RequestStateCodec` in scope seals it with HMAC-SHA256 over the tool name, the

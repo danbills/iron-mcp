@@ -75,6 +75,7 @@ private[schema] object ConstraintSchemaMacros:
           // Annotation-only constraints (see Annotations.scala).
           case "Titled"  => literal(args.head).map(v => List("title" -> v)).getOrElse(Nil)
           case "Default" => literal(args.head).map(v => List("default" -> v)).getOrElse(Nil)
+          case "Format"  => literal(args.head).map(v => List("format" -> v)).getOrElse(Nil)
 
           // A numeric constraint applied to the *length* of the value.
           case "Length" => asLength(read(args.head))

@@ -102,3 +102,23 @@ class SchemaSuite extends FunSuite:
     // Iron's, and its message is a true description of the constraint.
     val times = summon[JsonSchemaOf[BareInterval]].schema.hcursor.downField("properties").downField("times")
     assertEquals(times.get[String]("description"), Right("Should be included in [1, 10]"))
+
+class AnnotationSchemaSuite extends munit.FunSuite:
+  import io.github.iltotore.iron.*
+  import io.github.iltotore.iron.constraint.all.*
+  import ironmcp.schema.{Default, Format, JsonSchemaOf, Titled}
+
+  final case class Search(
+      checkIn: String :| ((Format["date"] & Match["^\\d{4}-\\d{2}-\\d{2}$"]) DescribedAs "Check-in date."),
+      nights: Option[Int :| (Interval.Closed[1, 30] & Default[1])],
+      label: String :| (Titled["Label"] & Default["none"])
+  ) derives JsonSchemaOf
+
+  test("Format, Default and Titled add their keywords and nothing else"):
+    val props = summon[JsonSchemaOf[Search]].schema.hcursor.downField("properties")
+    assertEquals(props.downField("checkIn").get[String]("format"), Right("date"))
+    assertEquals(props.downField("checkIn").get[String]("description"), Right("Check-in date."))
+    assertEquals(props.downField("nights").get[Int]("default"), Right(1))
+    assertEquals(props.downField("nights").get[Int]("maximum"), Right(30))
+    assertEquals(props.downField("label").get[String]("title"), Right("Label"))
+    assertEquals(props.downField("label").get[String]("default"), Right("none"))

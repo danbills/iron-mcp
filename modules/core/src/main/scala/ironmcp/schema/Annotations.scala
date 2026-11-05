@@ -31,3 +31,13 @@ object Default:
   given [A, V]: Constraint[A, Default[V]] with
     override inline def test(inline value: A): Boolean = true
     override inline def message: String                = "Always valid"
+
+/** Adds `"format": F` (`date`, `email`, `uri`, ...). A hint like the others:
+  * pair it with a real constraint (a `Match`) when the value must be checked.
+  */
+final class Format[F <: String]
+
+object Format:
+  given [A, F <: String]: Constraint[A, Format[F]] with
+    override inline def test(inline value: A): Boolean = true
+    override inline def message: String                = "Always valid"
