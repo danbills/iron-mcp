@@ -18,13 +18,31 @@ import scala.concurrent.duration.*
   * client capability, so the two cannot disagree (as on the server side, where
   * providers declare capabilities).
   */
-final case class InputHandlers[F[_]](elicitation: Option[ElicitFormParams => F[ElicitResult]] = None):
+final case class InputHandlers[F[_]](
+    elicitation: Option[ElicitFormParams => F[ElicitResult]] = None,
+    sampling: Option[CreateMessageParams => F[CreateMessageResult]] = None,
+    roots: Option[F[List[Root]]] = None
+):
   def capabilities: ClientCapabilities =
-    ClientCapabilities(elicitation = elicitation.map(_ => ElicitationCapability(form = Some(JsonObject.empty))))
+    ClientCapabilities(
+      elicitation = elicitation.map(_ => ElicitationCapability(form = Some(JsonObject.empty))),
+      sampling = sampling.map(_ => SamplingCapability()),
+      roots = roots.map(_ => JsonObject.empty)
+    )
+
+  /** Both sets of handlers; where both have one, `other`'s wins. */
+  def ++(other: InputHandlers[F]): InputHandlers[F] =
+    InputHandlers(other.elicitation.orElse(elicitation), other.sampling.orElse(sampling), other.roots.orElse(roots))
 
 object InputHandlers:
   def none[F[_]]: InputHandlers[F] = InputHandlers[F]()
-  def elicitation[F[_]](handler: ElicitFormParams => F[ElicitResult]): InputHandlers[F] = InputHandlers(Some(handler))
+  def elicitation[F[_]](handler: ElicitFormParams => F[ElicitResult]): InputHandlers[F] = InputHandlers(elicitation = Some(handler))
+
+  /** Runs the server's `sampling/createMessage` on the client's model. */
+  def sampling[F[_]](handler: CreateMessageParams => F[CreateMessageResult]): InputHandlers[F] = InputHandlers(sampling = Some(handler))
+
+  /** Answers `roots/list`; `roots` is evaluated for each request, so it can change. */
+  def roots[F[_]](roots: F[List[Root]]): InputHandlers[F] = InputHandlers(roots = Some(roots))
 
 /** The answers to an `input_required` result, sent back on the retry. */
 final case class Retry(requestState: Option[String], inputResponses: Map[String, Json])
@@ -145,12 +163,14 @@ final class McpClient[F[_]] private (
     request.as[InputRequest] match
       case Left(failure) => F.raiseError(McpClientError.Malformed(s"input request '$key': ${failure.getMessage}"))
       case Right(InputRequest(method, params)) =>
-        ((method: String), handlers.elicitation) match
-          case ("elicitation/create", Some(handler)) =>
-            F.fromEither(params.as[ElicitFormParams].leftMap(f => McpClientError.Malformed(s"input request '$key': ${f.getMessage}")))
-              .flatMap(handler)
-              .map(_.asJson.deepDropNullValues)
-          case (other, _) => F.raiseError(McpClientError.UnsupportedInputRequest(key, other))
+        def decoded[P: Decoder]: F[P] =
+          F.fromEither(params.as[P].leftMap(f => McpClientError.Malformed(s"input request '$key': ${f.getMessage}")))
+        val answered: Option[F[Json]] = (method: String) match
+          case "elicitation/create"     => handlers.elicitation.map(h => decoded[ElicitFormParams].flatMap(h).map(_.asJson))
+          case "sampling/createMessage" => handlers.sampling.map(h => decoded[CreateMessageParams].flatMap(h).map(_.asJson))
+          case "roots/list"             => handlers.roots.map(_.map(roots => ListRootsResult(roots).asJson))
+          case _                        => None
+        answered.fold(F.raiseError(McpClientError.UnsupportedInputRequest(key, method)))(_.map(_.deepDropNullValues))
 
   private def page(cursor: Option[String]): JsonObject = JsonObject.fromIterable(cursor.map("cursor" -> _.asJson))
 

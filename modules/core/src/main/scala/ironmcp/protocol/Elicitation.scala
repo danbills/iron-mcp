@@ -16,9 +16,17 @@ object InputRequest:
   given Codec.AsObject[InputRequest] = Codec.AsObject.derived
 
   val ElicitMethod: NonEmptyString = "elicitation/create"
+  val SampleMethod: NonEmptyString = "sampling/createMessage"
+  val RootsMethod: NonEmptyString  = "roots/list"
 
   /** A form-mode `elicitation/create`. */
   def elicit(params: ElicitFormParams): InputRequest = InputRequest(ElicitMethod, params.asJson)
+
+  /** A `sampling/createMessage`: a completion from the client's model. */
+  def sample(params: CreateMessageParams): InputRequest = InputRequest(SampleMethod, params.asJson)
+
+  /** A `roots/list`: the client's filesystem roots. */
+  val listRoots: InputRequest = InputRequest(RootsMethod, Json.obj())
 
   /** The client capability an embedded request needs, when it is one the spec defines. */
   def needs(method: String): Option[ClientCapabilityNeeded] = method match

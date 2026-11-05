@@ -100,6 +100,19 @@ reaches the handler. Not sealing has to be spelled out:
 `RequestStateCodec.unprotected`. A client that did not declare `elicitation` gets
 an `isError` result instead of a question it cannot answer.
 
+The same round trip can ask the client's model for a completion, or ask for the
+client's filesystem roots:
+
+```scala
+ctx.ask("drafted")("summary" -> Sample.message(s"Summarize $topic.", maxTokens = 200))
+// next round:
+ctx.sampledText("summary")      // the model's answer: untrusted input
+
+ctx.ask("listed")("roots" -> Roots.list)
+// next round:
+ctx.roots("roots")              // Option[List[Root]]
+```
+
 ## Why not the official Java SDK
 
 Two reasons, in order of weight:
@@ -303,6 +316,10 @@ the client's `InputHandlers`, which also declare its capabilities:
 McpClient[IO](transport, handlers = InputHandlers.elicitation(params => askTheUser(params)))
   .flatMap(_.callToolGathering("book_meeting", args, maxRounds = 10, deadline = 2.minutes))
 ```
+
+`InputHandlers.sampling(params => runModel(params))` and `InputHandlers.roots(IO.pure(roots))`
+answer the other two kinds of request; combine handlers with `++`. Each one
+declares its capability, and a client without one is never asked.
 
 The deadline is one timeout around the whole exchange, so it also cancels a
 prompt still waiting on the user. `ClientTransport.inProcess(server)` runs a

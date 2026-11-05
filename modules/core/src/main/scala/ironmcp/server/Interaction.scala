@@ -78,9 +78,26 @@ final class ToolContext private[server] (val params: CallToolParams, val request
 
   def clientCapabilities: ClientCapabilities = params._meta.clientCapabilities
 
-  /** The client's answer to the input request sent under `key`, if it sent one. */
+  /** The client's raw answer under `key`, whatever was asked. */
+  def raw(key: String): Option[Json] = params.inputResponses.flatMap(_.get(key))
+
+  /** The client's answer to the elicitation sent under `key`, if it sent one. */
   def response(key: String): Option[ElicitResult] =
-    params.inputResponses.flatMap(_.get(key)).flatMap(_.as[ElicitResult].toOption)
+    raw(key).flatMap(_.as[ElicitResult].toOption)
+
+  /** The completion the client's model produced for the [[Sample]] sent under
+    * `key`. It is model output the server did not control: untrusted input.
+    */
+  def sampled(key: String): Option[CreateMessageResult] =
+    raw(key).flatMap(_.as[CreateMessageResult].toOption)
+
+  /** The sampled text for `key`, when the model answered with text. */
+  def sampledText(key: String): Option[String] =
+    sampled(key).collect { case CreateMessageResult(_, ContentBlock.Text(text, _, _), _, _) => text }
+
+  /** The client's roots, for the [[Roots.list]] sent under `key`. */
+  def roots(key: String): Option[List[Root]] =
+    raw(key).flatMap(_.as[ListRootsResult].toOption).map(_.roots)
 
   /** The accepted form content under `key`, decoded into `R`. The content is
     * user input, so it is validated like tool arguments: every refinement on
@@ -103,3 +120,31 @@ object Elicit:
     */
   def form[R](message: String)(using schema: JsonSchemaOf[R]): InputRequest =
     InputRequest.elicit(ElicitFormParams(message, schema.schema.as[ObjectSchema].getOrElse(ObjectSchema.empty)))
+
+object Sample:
+
+  /** Asks the client's model to complete one user message. */
+  def message(
+      prompt: String,
+      maxTokens: Int,
+      systemPrompt: Option[String] = None,
+      modelPreferences: Option[ModelPreferences] = None,
+      temperature: Option[Double] = None
+  ): InputRequest =
+    InputRequest.sample(
+      CreateMessageParams(
+        messages = List(SamplingMessage(Role.user, ContentBlock.Text(prompt))),
+        maxTokens = maxTokens,
+        systemPrompt = systemPrompt,
+        modelPreferences = modelPreferences,
+        temperature = temperature
+      )
+    )
+
+  /** A full `sampling/createMessage`, for a conversation or non-text content. */
+  def apply(params: CreateMessageParams): InputRequest = InputRequest.sample(params)
+
+object Roots:
+
+  /** Asks the client for its filesystem roots; read them with [[ToolContext.roots]]. */
+  val list: InputRequest = InputRequest.listRoots
