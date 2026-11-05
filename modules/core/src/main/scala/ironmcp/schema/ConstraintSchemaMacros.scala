@@ -72,6 +72,10 @@ private[schema] object ConstraintSchemaMacros:
           case "StrictEqual" => literal(args.head).map(v => List("const" -> v)).getOrElse(Nil)
           case "Match"       => literal(args.head).map(v => List("pattern" -> v)).getOrElse(Nil)
 
+          // Annotation-only constraints (see Annotations.scala).
+          case "Titled"  => literal(args.head).map(v => List("title" -> v)).getOrElse(Nil)
+          case "Default" => literal(args.head).map(v => List("default" -> v)).getOrElse(Nil)
+
           // A numeric constraint applied to the *length* of the value.
           case "Length" => asLength(read(args.head))
 
