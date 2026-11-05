@@ -152,6 +152,7 @@ lazy val auth = (project in file("modules/auth"))
       "org.http4s"    %% "http4s-ember-server" % http4sVersion,
       "org.http4s"    %% "http4s-ember-client" % http4sVersion,
       "org.http4s"    %% "http4s-circe"        % http4sVersion,
+      "org.http4s"    %% "http4s-dsl"          % http4sVersion  % Test,  // the fake authorization server
       "org.scalameta" %% "munit"               % munitVersion   % Test,
       "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
     )

@@ -347,6 +347,34 @@ yield headers
 
 ---
 
+### The Client Flow: Discovery, PKCE and Refresh (`OAuthClient`)
+
+`OAuthClient` is the client side of MCP authorization, going from the first `401` to a token:
+
+1. **Discovery.** `discover(rejection, resource)` reads `resource_metadata` from the challenge and fetches the RFC 9728 document. It checks that the document names the resource that was called. It then fetches the authorization server's RFC 8414 metadata (or its OpenID configuration) and checks the `issuer`.
+2. **Trust.** Only an authorization server on the client's allowlist is ever contacted. The resource server is the one that names it, and a client that follows any name can be sent to an attacker (the class of bug in GHSA-6qxp-vccf-f47h).
+3. **Authorization code with PKCE S256.** A server that does not advertise `S256` is refused before the user is sent anywhere. Every request carries the RFC 8707 `resource` parameter, and the redirect's `state` must match.
+4. **Refresh.** `authorizer` refreshes when the requested scopes are already granted. A refresh cannot widen a grant, so a step-up goes back to the user.
+
+`authorizer` has exactly the shape `StepUpClient.create` takes, so the Scope-Union Rule and the refresh-on-401 come together:
+
+```scala mdoc:silent
+import cats.effect.std.SecureRandom
+
+def connect(http: Client[IO], rejection: ironmcp.client.McpClientError.Http, openBrowser: Uri => IO[AuthorizationResponse]) =
+  for
+    random    <- SecureRandom.javaSecuritySecureRandom[IO]
+    oauth      = OAuthClient[IO](http, random, trusted = Set("https://danarch.tail09c16c.ts.net:10000/realms/hacker-bros"))
+    found     <- oauth.discover(rejection, resource = "http://localhost:5302/mcp")
+    authorize <- oauth.authorizer(found, clientId = "mcp-client", redirectUri = "http://127.0.0.1:7777/callback", openBrowser)
+    stepUp    <- StepUpClient.create[IO](authorize)
+  yield stepUp
+```
+
+`openBrowser` opens the URL and returns the `code` and `state` from the redirect. Typically it runs a loopback listener on `redirectUri`.
+
+---
+
 ## 7. Verification and Testing Checklist
 
 When deploying or testing an OAuth 2.1 protected MCP server:
