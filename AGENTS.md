@@ -22,7 +22,7 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
 - `modules/demo/` — runnable stdio demo server
 - `modules/weather/` — example MCP server over the NWS (weather.gov) API, JVM-only: `Nws.scala` (models + `NwsOp` algebra + `Nws[G]` smart constructors), `NwsHttp4s.scala` (interpreter), `WeatherTools.scala` (tools as `Free` programs), `Main.scala` (wiring)
 - `modules/nasa/` — example MCP server over NASA's APOD API (`NASA_API_KEY`), JVM-only, same layout (`ApodOp`, `ApodHttp4s`, `ApodTools`)
-- `build.sbt`, `project/` — sbt 2 build
+- `build.sbt`, `project/` — sbt 2 build; `project/Mcpb.scala` writes `.mcpb` bundles (hand-written manifest JSON and zip Unix modes, since the build has no JSON or zip library)
 
 ## Build, Test, and Development Commands
 
@@ -40,6 +40,7 @@ sbt "demoJVM/run"             # start the stdio demo server on the JVM
 sbt "weather/run"             # run the weather.gov example (needs no key)
 sbt "nasa/run"                # run the NASA APOD example (set NASA_API_KEY)
 sbt "demoNative/nativeLink"   # native binary
+sbt "demoNative/mcpb"         # pack it as an MCP Bundle (project/Mcpb.scala; checks tools against the binary)
 ```
 
 Releases are cut locally (no CI): `git tag -a v0.1.0`, then `sbt +publishSigned` and `sbt sonaUpload`; the version comes from the tag via sbt-dynver.

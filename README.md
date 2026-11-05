@@ -382,6 +382,7 @@ sbt "http/Test/testFull"      # Streamable HTTP server and client, in memory
 sbt "weather/Test/testFull" "nasa/Test/testFull"   # the example tools, offline
 sbt "demoJVM/run"             # stdio server on the JVM
 sbt "demoNative/nativeLink"   # native binary
+sbt "demoNative/mcpb"         # the native binary as an MCP Bundle (.mcpb)
 ```
 
 ```bash
@@ -394,6 +395,20 @@ echo '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{
 The Native binary is ~17 MB and answers `server/discover` in about 44 ms
 including process spawn — which is the point of avoiding reflection: a local
 harness spawns this per session.
+
+`demoNative/mcpb` packs that binary as an MCP Bundle (Handbook §5.5), a file
+Claude Desktop installs in one step. It writes a `manifest_version` 0.3
+`manifest.json` for a `binary` server on the build host's platform. Before
+packing, it runs the binary with `tools/list` and fails the build if the
+manifest's tools differ. To check the result:
+
+```bash
+npx @anthropic-ai/mcpb@2.1.2 validate target/out/native0.5/scala-3.9.0/iron-mcp-demo/mcpb/manifest.json
+npx @anthropic-ai/mcpb@2.1.2 info target/out/native0.5/scala-3.9.0/iron-mcp-demo/iron-mcp-demo-<version>.mcpb
+```
+
+A Native binary runs only on the platform it was linked on, so build one
+bundle per platform.
 
 ## Build notes
 

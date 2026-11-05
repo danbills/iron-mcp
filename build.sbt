@@ -77,6 +77,9 @@ lazy val core = crossProject(JVMPlatform, NativePlatform)
     )
   )
 
+lazy val mcpbTools = settingKey[Seq[Mcpb.Tool]]("The tools an MCP Bundle's manifest lists; checked against the linked server")
+lazy val mcpb      = taskKey[File]("Links the server and packs it as an MCP Bundle (.mcpb, manifest 0.3)")
+
 lazy val demo = crossProject(JVMPlatform, NativePlatform)
   .crossType(CrossType.Pure)
   .in(file("modules/demo"))
@@ -85,6 +88,31 @@ lazy val demo = crossProject(JVMPlatform, NativePlatform)
     name := "iron-mcp-demo",
     Compile / mainClass := Some("ironmcp.demo.Main"),
     publish / skip := true
+  )
+  .nativeSettings(
+    // `demoNative/mcpb`: the native binary as a one-file MCP Bundle (Handbook §5.5).
+    mcpbTools := Seq(
+      Mcpb.Tool("greet", "Greet someone, one to ten times."),
+      Mcpb.Tool("long_operation", "Simulates work for a few seconds, reporting progress each second.")
+    ),
+    mcpb := Def.uncached {
+      val binary = fileConverter.value.toPath((Compile / nativeLink).value)
+      val manifest = Mcpb.Manifest(
+        name = "iron-mcp-demo",
+        displayName = "iron-mcp demo",
+        version = version.value,
+        description = "The iron-mcp demo server: typed tools with schemas derived from Iron refinement types.",
+        author = "Dan Billings",
+        license = "MIT",
+        homepage = homepage.value.map(_.toString),
+        binaryName = "iron-mcp-demo",
+        tools = mcpbTools.value
+      )
+      val out = target.value / s"iron-mcp-demo-${Mcpb.semver(version.value)}.mcpb"
+      Mcpb.pack(manifest, binary, target.value / "mcpb", out)
+      streams.value.log.info(s"MCP Bundle: $out")
+      out
+    }
   )
 
 // Streamable HTTP. JVM-only: http4s ember does not run on Scala Native.
