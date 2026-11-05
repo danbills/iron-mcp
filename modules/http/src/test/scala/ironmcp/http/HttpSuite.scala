@@ -112,3 +112,71 @@ class HttpSuite extends CatsEffectSuite:
 
   test("other paths are not the endpoint"):
     post(call("echo"), path = "/other").map((status, _) => assertEquals(status, Status.NotFound))
+
+class HttpProgressSuite extends CatsEffectSuite:
+  import cats.syntax.all.*
+  import io.circe.syntax.*
+  import io.github.iltotore.iron.autoRefine
+
+  final case class Steps(steps: Int :| Interval.Closed[1, 10]) derives Decoder, JsonSchemaOf
+
+  private val countdown = McpTool.reporting[IO, Steps]("countdown", "Counts down.") { (args, emit) =>
+    val total: Int = args.steps
+    (1 to total).toList.traverse_(i => emit.progress(i.toDouble, Some(total.toDouble))).as(s"Done after $total steps.")
+  }
+
+  private val app = McpHttp.routes(McpServer[IO](Implementation("http-progress", "0"), tools = Some(ToolSet.of(countdown)))).orNotFound
+
+  private def body(withToken: Boolean) =
+    val token = if withToken then ""","progressToken":"p1"""" else ""
+    s"""{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"countdown","arguments":{"steps":2},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}$token}}}"""
+
+  private def post(withToken: Boolean, accept: String): IO[Response[IO]] =
+    app.run(
+      Request[IO](Method.POST, Uri.unsafeFromString("/mcp"))
+        .withEntity(body(withToken))
+        .putHeaders(
+          Header.Raw(CIString("MCP-Protocol-Version"), "2026-07-28"),
+          Header.Raw(CIString("Mcp-Method"), "tools/call"),
+          Header.Raw(CIString("Mcp-Name"), "countdown"),
+          Header.Raw(CIString("Accept"), accept),
+          Header.Raw(CIString("Host"), "localhost:5000")
+        )
+    )
+
+  private def isStream(r: Response[IO]) = r.contentType.exists(_.mediaType.satisfies(MediaType.`text/event-stream`))
+
+  test("progress turns the reply into an SSE stream: the notifications, then the response"):
+    post(withToken = true, accept = "application/json, text/event-stream").flatMap { response =>
+      assertEquals(response.status, Status.Ok)
+      assert(isStream(response), response.contentType.toString)
+      response.body.through(ServerSentEvent.decoder[IO]).compile.toList.map { events =>
+        val messages = events.flatMap(_.data).map(parser.parse(_).toOption.get)
+        assertEquals(messages.map(_.hcursor.get[String]("method").toOption), List(Some("notifications/progress"), Some("notifications/progress"), None))
+        assertEquals(messages.last.hcursor.get[Int]("id"), Right(4))
+        assertEquals(messages.last.hcursor.downField("result").downField("content").downArray.get[String]("text"), Right("Done after 2 steps."))
+      }
+    }
+
+  test("no progressToken, nothing emitted: plain JSON even when SSE is accepted"):
+    post(withToken = false, accept = "application/json, text/event-stream").flatMap { response =>
+      assert(!isStream(response))
+      response.as[String].map(text => assertEquals(parser.parse(text).toOption.get.hcursor.get[Int]("id"), Right(4)))
+    }
+
+  test("a client that does not accept SSE gets plain JSON, without the notifications"):
+    post(withToken = true, accept = "application/json").flatMap { response =>
+      assert(!isStream(response))
+      response.as[String].map(text => assert(text.contains("Done after 2 steps."), text))
+    }
+
+  test("McpHttpClient hands the streamed progress to onNotification"):
+    import ironmcp.client.McpClient
+    for
+      seen   <- cats.effect.Ref.of[IO, Int](0)
+      c      <- McpClient[IO](McpHttpClient.transport(org.http4s.client.Client.fromHttpApp(app), Uri.unsafeFromString("http://localhost:5000/mcp"), IO.pure(Headers.empty), _ => seen.update(_ + 1)))
+      result <- c.callTool("countdown", io.circe.JsonObject("steps" -> 3.asJson), progressToken = Some(ironmcp.protocol.ProgressToken.Num(9)))
+      count  <- seen.get
+    yield
+      assert(result.isInstanceOf[ironmcp.protocol.CallToolResult])
+      assertEquals(count, 3)

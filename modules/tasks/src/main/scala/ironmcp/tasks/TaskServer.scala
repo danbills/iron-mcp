@@ -1,7 +1,7 @@
 package ironmcp
 package tasks
 
-import cats.ApplicativeThrow
+import cats.{Applicative, ApplicativeThrow}
 import cats.effect.{Concurrent, Temporal}
 import cats.syntax.all.*
 import io.circe.*
@@ -10,7 +10,7 @@ import io.github.iltotore.iron.*
 import io.github.iltotore.iron.autoRefine
 import io.github.iltotore.iron.constraint.all.*
 import ironmcp.protocol.*
-import ironmcp.server.{McpException, ServerHandler}
+import ironmcp.server.{McpException, NotificationSink, ServerHandler}
 import ironmcp.tasks.TaskModels.*
 
 /** Server wrapper implementing the Tasks Extension (SEP-2663, Handbook §7.3).
@@ -28,7 +28,14 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
     val defaultTtlMs: Long = 300000L
 ) extends ServerHandler[F]:
 
-  def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] = message match
+  def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] =
+    handleEmitting(message, _ => Applicative[F].unit)
+
+  /** Requests the extension does not take over pass `emit` through, so their
+    * progress reaches the client. A tool run as a background task has no
+    * request left to report on, so it gets no sink.
+    */
+  override def handleEmitting(message: JsonRpcMessage, emit: NotificationSink[F]): F[Option[JsonRpcMessage]] = message match
     case req @ JsonRpcMessage.Request(id, method, params) =>
       method match
         case "tasks/get" =>
@@ -41,19 +48,24 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
           handleUpdateTask(id, params)
 
         case "tools/call" =>
-          handleToolsCall(req)
+          handleToolsCall(req, emit)
 
         case Method.Discover.wire =>
           handleDiscover(req)
 
         case _ =>
-          underlying.handle(req)
+          underlying.handleEmitting(req, emit)
 
     case other =>
-      underlying.handle(other)
+      underlying.handleEmitting(other, emit)
 
   def handleRecovering(message: JsonRpcMessage)(using ApplicativeThrow[F]): F[Option[JsonRpcMessage]] =
-    handle(message).handleError { error =>
+    handleEmittingRecovering(message, _ => Applicative[F].unit)
+
+  override def handleEmittingRecovering(message: JsonRpcMessage, emit: NotificationSink[F])(using
+      ApplicativeThrow[F]
+  ): F[Option[JsonRpcMessage]] =
+    handleEmitting(message, emit).handleError { error =>
       val id = message match
         case JsonRpcMessage.Request(id, _, _) => Some(id)
         case _                                => None
@@ -99,7 +111,7 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
             Some(JsonRpcMessage.Failure(Some(id), JsonRpcError(ErrorCode.InvalidParams, s"Task '${p.taskId}' not found".assume[Not[Empty]])))
         }
 
-  private def handleToolsCall(req: JsonRpcMessage.Request): F[Option[JsonRpcMessage]] =
+  private def handleToolsCall(req: JsonRpcMessage.Request, emit: NotificationSink[F]): F[Option[JsonRpcMessage]] =
     val toolName = req.params.flatMap(_.hcursor.get[String]("name").toOption).getOrElse("")
     val clientAcceptsTasks = hasTasksCapability(req.params)
 
@@ -126,7 +138,7 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
       yield Some(JsonRpcMessage.Success(req.id, createRes.asJson))
     else
       // Plain synchronous execution for non-task tools or non-task clients
-      underlying.handle(req)
+      underlying.handleEmitting(req, emit)
 
   private def handleDiscover(req: JsonRpcMessage.Request): F[Option[JsonRpcMessage]] =
     underlying.handle(req).map {

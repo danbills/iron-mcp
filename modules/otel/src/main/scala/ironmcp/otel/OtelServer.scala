@@ -1,11 +1,12 @@
 package ironmcp
 package otel
 
+import cats.ApplicativeThrow
 import cats.effect.{Async, Clock}
 import cats.syntax.all.*
 import io.circe.Json
 import ironmcp.protocol.*
-import ironmcp.server.McpServer
+import ironmcp.server.{McpServer, NotificationSink, ServerHandler}
 import org.typelevel.otel4s.Attribute
 import org.typelevel.otel4s.trace.{SpanBuilder, SpanContext, SpanKind, StatusCode}
 
@@ -17,28 +18,48 @@ final class OtelServer[F[_]](
   def handle(
       message: JsonRpcMessage,
       transport: String = "unknown",
-      httpContext: Option[SpanContext] = None
+      httpContext: Option[SpanContext] = None,
+      emit: NotificationSink[F] = (_: JsonRpcMessage.Notification) => F.unit
   ): F[Option[JsonRpcMessage]] =
-    process(message, transport, httpContext, recovering = false)
+    process(message, transport, httpContext, recovering = false, emit)
 
   def handleRecovering(
       message: JsonRpcMessage,
       transport: String = "unknown",
-      httpContext: Option[SpanContext] = None
+      httpContext: Option[SpanContext] = None,
+      emit: NotificationSink[F] = (_: JsonRpcMessage.Notification) => F.unit
   ): F[Option[JsonRpcMessage]] =
-    process(message, transport, httpContext, recovering = true)
+    process(message, transport, httpContext, recovering = true, emit)
+
+  /** This server as a [[ServerHandler]] for one transport, so the core
+    * transports (`Stdio.pipe`, `McpHttp.answer`) can serve it, progress
+    * notifications included.
+    */
+  def handlerFor(transport: String, httpContext: Option[SpanContext] = None): ServerHandler[F] =
+    val self = this
+    new ServerHandler[F]:
+      def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] = self.handle(message, transport, httpContext)
+      def handleRecovering(message: JsonRpcMessage)(using ApplicativeThrow[F]): F[Option[JsonRpcMessage]] =
+        self.handleRecovering(message, transport, httpContext)
+      override def handleEmitting(message: JsonRpcMessage, emit: NotificationSink[F]): F[Option[JsonRpcMessage]] =
+        self.handle(message, transport, httpContext, emit)
+      override def handleEmittingRecovering(message: JsonRpcMessage, emit: NotificationSink[F])(using
+          ApplicativeThrow[F]
+      ): F[Option[JsonRpcMessage]] =
+        self.handleRecovering(message, transport, httpContext, emit)
 
   private def process(
       message: JsonRpcMessage,
       transport: String,
       httpContext: Option[SpanContext],
-      recovering: Boolean
+      recovering: Boolean,
+      emit: NotificationSink[F]
   ): F[Option[JsonRpcMessage]] =
     message match
       case req @ JsonRpcMessage.Request(id, method, params) =>
-        traceRequest(req, id, method, params, transport, httpContext, recovering)
+        traceRequest(req, id, method, params, transport, httpContext, recovering, emit)
       case other =>
-        if recovering then underlying.handleRecovering(other) else underlying.handle(other)
+        if recovering then underlying.handleEmittingRecovering(other, emit) else underlying.handleEmitting(other, emit)
 
   private def requestIdString(id: RequestId): String = id match
     case RequestId.Num(v)  => v.toString
@@ -51,7 +72,8 @@ final class OtelServer[F[_]](
       params: Option[Json],
       transport: String,
       httpContext: Option[SpanContext],
-      recovering: Boolean
+      recovering: Boolean,
+      emit: NotificationSink[F]
   ): F[Option[JsonRpcMessage]] =
     val methodStr = method: String
     val targetOpt: Option[String] = methodStr match
@@ -100,7 +122,7 @@ final class OtelServer[F[_]](
     configuredBuilder.build.use { span =>
       for
         start <- Clock[F].monotonic
-        callResult <- (if recovering then underlying.handleRecovering(req) else underlying.handle(req)).attempt
+        callResult <- (if recovering then underlying.handleEmittingRecovering(req, emit) else underlying.handleEmitting(req, emit)).attempt
         end   <- Clock[F].monotonic
         durationSec = (end - start).toNanos.toDouble / 1e9
         reply <- callResult match

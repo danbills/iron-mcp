@@ -1,11 +1,11 @@
 package ironmcp
 package transport
 
-import cats.MonadThrow
-import cats.effect.Async
+import cats.effect.{Async, Concurrent}
 import cats.syntax.all.*
 import fs2.{text, Pipe, Stream}
-import ironmcp.server.ServerHandler
+import fs2.concurrent.Channel
+import ironmcp.server.{NotificationSink, ServerHandler}
 
 import java.nio.charset.StandardCharsets.UTF_8
 
@@ -15,8 +15,12 @@ import java.nio.charset.StandardCharsets.UTF_8
   * Diagnostics go to stderr, never stdout: anything on stdout that is not a
   * JSON-RPC message corrupts the stream.
   *
+  * A request's progress notifications are written as it emits them, before
+  * its reply.
+  *
   * Serving needs `Async`, since reading stdin blocks; [[pipe]], the server as
-  * lines in and lines out, needs only `MonadThrow`.
+  * lines in and lines out, needs `Concurrent` to merge notifications into the
+  * replies.
   */
 object Stdio:
 
@@ -37,13 +41,21 @@ object Stdio:
   /** The server as a stream of lines in, lines out: what [[serve]] runs between
     * stdin and stdout. A client can be joined to it in memory, with no process.
     */
-  def pipe[F[_]: MonadThrow](server: ServerHandler[F]): Pipe[F, String, String] =
-    _.filter(_.trim.nonEmpty).evalMap(line => respond(server, line)).unNone
+  def pipe[F[_]: Concurrent](server: ServerHandler[F]): Pipe[F, String, String] = in =>
+    Stream.eval(Channel.unbounded[F, String]).flatMap { out =>
+      // One channel for notifications and replies, written in the order they
+      // happen, so a request's progress always comes before its reply.
+      val requests = in
+        .filter(_.trim.nonEmpty)
+        .evalMap(line => respond(server, line, n => out.send(Wire.encode(n)).void).flatMap(_.traverse_(out.send)))
+        .onFinalize(out.close.void)
+      out.stream.concurrently(requests)
+    }
 
-  private def respond[F[_]: MonadThrow](server: ServerHandler[F], line: String): F[Option[String]] =
+  private def respond[F[_]: Concurrent](server: ServerHandler[F], line: String, emit: NotificationSink[F]): F[Option[String]] =
     Wire.decode(line) match
-      case Left(error)    => MonadThrow[F].pure(Some(Wire.errorResponse(error)))
-      case Right(message) => server.handleRecovering(message).map(_.map(Wire.encode))
+      case Left(error)    => Concurrent[F].pure(Some(Wire.errorResponse(error)))
+      case Right(message) => server.handleEmittingRecovering(message, emit).map(_.map(Wire.encode))
 
   /** Convenience for a main method. */
   def run[F[_]: Async](server: ServerHandler[F]): Stream[F, Nothing] = Stream.eval(serve(server)).drain

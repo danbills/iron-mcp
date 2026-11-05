@@ -19,7 +19,14 @@ import ironmcp.schema.JsonSchemaOf
   * A handler that fails comes back as an `isError` result naming the tool, never
   * as a protocol error: the model can read it and try again.
   */
-final case class McpTool[F[_]](definition: Tool, invoke: CallToolParams => F[CallToolResult | InputRequiredResult])
+final case class McpTool[F[_]](
+    definition: Tool,
+    invoke: CallToolParams => F[CallToolResult | InputRequiredResult],
+    emitting: Option[(CallToolParams, Emit[F]) => F[CallToolResult | InputRequiredResult]]
+):
+  /** Runs the tool, giving it `emit` if it reports progress. */
+  def run(params: CallToolParams, emit: Emit[F]): F[CallToolResult | InputRequiredResult] =
+    emitting.fold(invoke(params))(_(params, emit))
 
 object McpTool:
 
@@ -50,6 +57,40 @@ object McpTool:
   ): InteractiveBuilder[A] =
     InteractiveBuilder(name, description, title, annotations)
 
+  /** A tool that reports progress while it runs:
+    * `McpTool.reporting[IO, Args](name, description) { (args, emit) => emit.progress(1, Some(3)) >> ... }`.
+    *
+    * The effect is named up front because the handler's `emit` is typed by it.
+    * Progress reaches the client only when it sent a `progressToken` and the
+    * transport can deliver notifications (see [[Emit]]).
+    */
+  def reporting[F[_], A](
+      name: ToolName,
+      description: NonEmptyString,
+      title: Option[NonEmptyString] = None,
+      annotations: Option[ToolAnnotations] = None
+  ): ReportingBuilder[F, A] =
+    ReportingBuilder(name, description, title, annotations)
+
+  final class ReportingBuilder[F[_], A] private[McpTool] (
+      name: ToolName,
+      description: NonEmptyString,
+      title: Option[NonEmptyString],
+      annotations: Option[ToolAnnotations]
+  ):
+    def apply[O](
+        handler: (A, Emit[F]) => F[O]
+    )(using F: ApplicativeThrow[F], decoder: Decoder[A], schema: JsonSchemaOf[A], output: ToolOutput[O]): McpTool[F] =
+      val run: (CallToolParams, Emit[F]) => F[CallToolResult | InputRequiredResult] = (params, emit) =>
+        decoded(params, decoder) match
+          case Right(arguments) =>
+            handler(arguments, emit)
+              .map(output.result)
+              .handleError(error => CallToolResult.failed(s"$name failed: ${error.getMessage}"))
+              .widen[CallToolResult | InputRequiredResult]
+          case Left(failed) => F.pure(failed)
+      McpTool(describe(name, description, title, annotations, schema, output), params => run(params, Emit.none[F]), Some(run))
+
   final class Builder[A] private[McpTool] (
       name: ToolName,
       description: NonEmptyString,
@@ -68,7 +109,8 @@ object McpTool:
                 .map(output.result)
                 .handleError(error => CallToolResult.failed(s"$name failed: ${error.getMessage}"))
                 .widen[CallToolResult | InputRequiredResult]
-            case Left(failed) => F.pure(failed)
+            case Left(failed) => F.pure(failed),
+        emitting = None
       )
 
   final class InteractiveBuilder[A] private[McpTool] (
@@ -104,7 +146,8 @@ object McpTool:
                       case Right(value) => output.result(value)
                       case Left(input)  => outgoing(name, arguments, input, params._meta.clientCapabilities, codec)
                     }
-                    .handleError(error => CallToolResult.failed(s"$name failed: ${error.getMessage}"))
+                    .handleError(error => CallToolResult.failed(s"$name failed: ${error.getMessage}")),
+        emitting = None
       )
 
   /** Seals the state, and turns a request the client cannot answer into a tool
@@ -166,8 +209,11 @@ final class ToolSet[F[_]](tools: List[McpTool[F]], ttlMs: CacheTtlMs = 60000L)(u
     F.pure(ListToolsResult(tools.map(_.definition), ttlMs, CacheScope.`private`))
 
   def call(params: CallToolParams): F[CallToolResult | InputRequiredResult] =
+    callEmitting(params, Emit.none[F])
+
+  override def callEmitting(params: CallToolParams, emit: Emit[F]): F[CallToolResult | InputRequiredResult] =
     byName.get(params.name) match
-      case Some(tool) => tool.invoke(params)
+      case Some(tool) => tool.run(params, emit)
       case None       => F.pure(CallToolResult.failed(s"no such tool: ${params.name}"))
 
 object ToolSet:

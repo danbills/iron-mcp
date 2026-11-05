@@ -74,11 +74,7 @@ object OtelHttp:
                   serverFor(request).flatMap {
                     case Left(response) => F.pure(response)
                     case Right(server) =>
-                      val otelServer = new OtelServer(server, telemetry)
-                      otelServer.handleRecovering(message, transport = "http", httpContext = httpContext).map {
-                        case Some(reply) => json(statusOf(reply), Wire.encode(reply))
-                        case None        => Response[F](Status.Accepted)
-                      }
+                      McpHttp.answer(new OtelServer(server, telemetry).handlerFor("http", httpContext), message, request)
                   }
       }
 
@@ -120,15 +116,6 @@ object OtelHttp:
 
   private def mismatch(message: String): JsonRpcError =
     JsonRpcError(ErrorCode.HeaderMismatch, message.asInstanceOf[NonEmptyString])
-
-  private def statusOf(reply: JsonRpcMessage): Status = reply match
-    case JsonRpcMessage.Failure(_, error) =>
-      error.code match
-        case ErrorCode.MethodNotFound => Status.NotFound
-        case ErrorCode.UnsupportedProtocolVersion | ErrorCode.HeaderMismatch | ErrorCode.MissingRequiredClientCapability =>
-          Status.BadRequest
-        case _ => Status.Ok
-    case _ => Status.Ok
 
   private def failure[F[_]](status: Status, id: Option[RequestId], code: ErrorCode, message: String): Response[F] =
     failure(status, id, JsonRpcError(code, message.asInstanceOf[NonEmptyString]))

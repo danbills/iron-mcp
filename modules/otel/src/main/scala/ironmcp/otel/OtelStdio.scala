@@ -2,25 +2,19 @@ package ironmcp
 package otel
 
 import cats.effect.Async
-import cats.syntax.all.*
 import fs2.{text, Pipe, Stream}
 import ironmcp.server.McpServer
-import ironmcp.transport.Wire
+import ironmcp.transport.Stdio
 
 import java.nio.charset.StandardCharsets.UTF_8
 
 object OtelStdio:
 
-  /** The server as an instrumented stream of lines in, lines out. */
+  /** The server as an instrumented stream of lines in, lines out, progress
+    * notifications included (see `Stdio.pipe`).
+    */
   def pipe[F[_]: Async](server: McpServer[F], telemetry: McpTelemetry[F]): Pipe[F, String, String] =
-    val otelServer = new OtelServer(server, telemetry)
-    _.filter(_.trim.nonEmpty).evalMap { line =>
-      Wire.decode(line) match
-        case Left(error) =>
-          Async[F].pure(Some(Wire.errorResponse(error)))
-        case Right(message) =>
-          otelServer.handleRecovering(message, transport = "pipe", httpContext = None).map(_.map(Wire.encode))
-    }.unNone
+    Stdio.pipe(new OtelServer(server, telemetry).handlerFor("pipe"))
 
   /** Reads and writes the standard streams with OpenTelemetry instrumentation. */
   def serve[F[_]](server: McpServer[F], telemetry: McpTelemetry[F])(using F: Async[F]): F[Unit] =

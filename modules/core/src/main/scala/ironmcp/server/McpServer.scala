@@ -47,9 +47,12 @@ final class McpServer[F[_]](
   /** Answers one message. `None` means the message was a notification, which by
     * JSON-RPC rule gets no reply.
     */
-  def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] = message match
+  def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] = handleEmitting(message, _ => F.unit)
+
+  /** [[handle]], with notifications the request emits going to `emit`. */
+  override def handleEmitting(message: JsonRpcMessage, emit: NotificationSink[F]): F[Option[JsonRpcMessage]] = message match
     case JsonRpcMessage.Request(id, method, params) =>
-      dispatch(Method.parse(method), params).map {
+      dispatch(Method.parse(method), params, emit).map {
         case Right(result) => Some(JsonRpcMessage.Success(id, result))
         case Left(error)   => Some(JsonRpcMessage.Failure(Some(id), error))
       }
@@ -64,7 +67,12 @@ final class McpServer[F[_]](
     * hold internals the client should not see.
     */
   def handleRecovering(message: JsonRpcMessage)(using F: ApplicativeThrow[F]): F[Option[JsonRpcMessage]] =
-    handle(message).handleError { error =>
+    handleEmittingRecovering(message, _ => F.unit)
+
+  override def handleEmittingRecovering(message: JsonRpcMessage, emit: NotificationSink[F])(using
+      F: ApplicativeThrow[F]
+  ): F[Option[JsonRpcMessage]] =
+    handleEmitting(message, emit).handleError { error =>
       val id = message match
         case JsonRpcMessage.Request(id, _, _) => Some(id)
         case _                                => None
@@ -74,7 +82,7 @@ final class McpServer[F[_]](
       id.map(requestId => JsonRpcMessage.Failure(Some(requestId), reply))
     }
 
-  private def dispatch(method: Method, params: Option[Json]): F[Either[JsonRpcError, Json]] =
+  private def dispatch(method: Method, params: Option[Json], emit: NotificationSink[F]): F[Either[JsonRpcError, Json]] =
     method match
       case Method.Discover =>
         withParams[DiscoverParams](params) { request =>
@@ -102,7 +110,7 @@ final class McpServer[F[_]](
       case Method.ToolsCall =>
         served(tools, "tools") { provider =>
           withParams[CallToolParams](params) { request =>
-            guarded(request._meta)(provider.call(request).map(orInput[CallToolResult]))
+            guarded(request._meta)(provider.callEmitting(request, Emit(request._meta, emit)).map(orInput[CallToolResult]))
           }
         }
 

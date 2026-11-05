@@ -27,12 +27,26 @@ object ClientTransport:
   /** A server in the same process. Messages still go through [[Wire]] both
     * ways, so what is tested is what a remote client would see.
     */
-  def inProcess[F[_]](server: ServerHandler[F])(using F: MonadThrow[F]): ClientTransport[F] = new ClientTransport[F]:
+  def inProcess[F[_]](server: ServerHandler[F])(using F: MonadThrow[F]): ClientTransport[F] =
+    inProcess(server, _ => F.unit)
+
+  /** [[inProcess]], with the notifications a request emits (progress) going
+    * to `onNotification` before its reply returns.
+    */
+  def inProcess[F[_]](server: ServerHandler[F], onNotification: JsonRpcMessage.Notification => F[Unit])(using
+      F: MonadThrow[F]
+  ): ClientTransport[F] = new ClientTransport[F]:
     private def overWire(message: JsonRpcMessage): F[JsonRpcMessage] =
       F.fromEither(Wire.decode(Wire.encode(message)).leftMap(e => McpClientError.Malformed(e.message: String)))
 
+    private val delivered: JsonRpcMessage.Notification => F[Unit] = notification =>
+      overWire(notification).flatMap {
+        case n: JsonRpcMessage.Notification => onNotification(n)
+        case _                              => F.unit
+      }
+
     def request(message: JsonRpcMessage.Request): F[JsonRpcMessage] =
-      overWire(message).flatMap(server.handleRecovering).flatMap {
+      overWire(message).flatMap(server.handleEmittingRecovering(_, delivered)).flatMap {
         case Some(reply) => overWire(reply)
         case None        => F.raiseError(McpClientError.Malformed(s"no reply to ${message.method: String}"))
       }

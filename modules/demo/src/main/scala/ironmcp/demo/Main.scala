@@ -47,10 +47,28 @@ object Main extends IOApp:
     IO.pure(Greeting(List.fill(args.times: Int)(s"Hello, ${args.name: String}!").mkString(" ")))
   }
 
+  type Seconds = Int :| (Interval.Closed[1, 30] DescribedAs "How long the work takes, in seconds")
+
+  final case class Work(seconds: Seconds) derives Decoder, JsonSchemaOf
+
+  /** A long-running operation that reports progress once a second, when the
+    * client sent a `progressToken` (Handbook §2.6.4).
+    */
+  private val longOperation = McpTool.reporting[IO, Work](
+    name = "long_operation",
+    description = "Simulates work for a few seconds, reporting progress each second."
+  ) { (args, emit) =>
+    val total: Int = args.seconds
+    (1 to total).toList.foldLeft(IO.unit)((done, i) =>
+      done >> IO.sleep(scala.concurrent.duration.DurationInt(1).second) >>
+        emit.progress(i.toDouble, Some(total.toDouble), Some(s"$i of $total seconds"))
+    ).as(s"Finished $total seconds of work.")
+  }
+
   private val server = McpServer(
     info = Implementation(name = "iron-mcp-demo", version = "0.1.0"),
     instructions = Some("Demo server for iron-mcp."),
-    tools = Some(ToolSet.of(greet))
+    tools = Some(ToolSet.of(greet, longOperation))
   )
 
   /** `Main` serves over stdio. `Main client <command> [args...]` is a client instead: it spawns

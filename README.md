@@ -113,6 +113,26 @@ ctx.ask("listed")("roots" -> Roots.list)
 ctx.roots("roots")              // Option[List[Root]]
 ```
 
+### Reporting progress
+
+A tool built with `McpTool.reporting` gets an `Emit` for sending
+`notifications/progress` while it runs:
+
+```scala
+McpTool.reporting[IO, Work]("long_operation", "Simulates work.") { (args, emit) =>
+  (1 to 3).toList.traverse_(i => IO.sleep(1.second) >> emit.progress(i, total = Some(3)))
+    .as("Finished.")
+}
+```
+
+Progress is sent only when the request's `_meta` carries a `progressToken`
+(`client.callTool(name, args, progressToken = Some(...))`). On stdio, each
+notification is written before the reply. Over Streamable HTTP, the reply
+becomes an SSE stream when the client accepts `text/event-stream`. `McpServer`
+still holds no state: the transport passes in a sink with each request
+(`handleEmitting`). Log notifications are not offered, because 2026-07-28
+deprecates the `logging` capability.
+
 ## Why not the official Java SDK
 
 Two reasons, in order of weight:
@@ -283,7 +303,8 @@ McpHttp.serve(McpHttp.routes(server), port = 5000).useForever
 ```
 
 Stateless, as the revision intends: one POST per message, a JSON reply per
-request, `202` for a notification, `405` for GET and DELETE. `MCP-Protocol-Version`,
+request (or an SSE stream scoped to it, when the request reports progress and
+the client accepts `text/event-stream`), `202` for a notification, `405` for GET and DELETE. `MCP-Protocol-Version`,
 `Mcp-Method` and `Mcp-Name` are required and checked against the body (`400`,
 `-32020` on a mismatch); an unsupported version is `400` with `-32022`, an
 unknown method `404` with `-32601`. `Origin` and `Host` must be loopback by
@@ -391,8 +412,7 @@ on the JVM and Scala Native, and so is the client (stdio and in-process); Stream
 `Free` programs over request algebras, tested offline.
 
 Not yet built: resource, prompt and completion providers beyond the traits,
-SSE responses from the server (the client reads them), a legacy-era (`initialize`) client, the Tasks extension,
-and capability providers such as email, web search or computer use.
+a legacy-era (`initialize`) client, and capability providers such as email, web search or computer use.
 
 ## Releasing
 

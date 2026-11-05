@@ -3,7 +3,10 @@ package http
 
 import cats.data.{Kleisli, OptionT}
 import cats.effect.{Async, Concurrent, Resource}
+import cats.effect.std.Queue
+import cats.effect.syntax.all.*
 import cats.syntax.all.*
+import fs2.Stream
 import com.comcast.ip4s.{Host, Port as IpPort}
 import fs2.io.net.Network
 import io.circe.Json
@@ -24,6 +27,14 @@ import java.nio.charset.StandardCharsets.UTF_8
   * Every message is its own POST; a request gets one `application/json` reply,
   * a notification gets `202`. There are no sessions and no GET stream, so a GET
   * or DELETE is `405`, and `Mcp-Session-Id` / `Last-Event-ID` are ignored.
+  *
+  * A request that emits notifications while it runs (progress) is answered
+  * with an SSE stream scoped to it instead, when the client's `Accept` allows
+  * `text/event-stream`: the notifications as they happen, then the reply, then
+  * the end of the stream. The choice is made by what happens first. If the
+  * reply is ready before any notification, it goes out as plain JSON, with the
+  * same status codes as always. Without `text/event-stream` in `Accept`,
+  * notifications are dropped.
   *
   * The headers that mirror the body (`MCP-Protocol-Version`, `Mcp-Method`,
   * `Mcp-Name`) are required and must agree with it; a mismatch is `400` with
@@ -126,13 +137,44 @@ object McpHttp:
                 case None =>
                   serverFor(request).flatMap {
                     case Left(response) => F.pure(response)
-                    case Right(server) =>
-                      server.handleRecovering(message).map {
-                        case Some(reply) => json(statusOf(reply), Wire.encode(reply))
-                        case None        => Response[F](Status.Accepted)
-                      }
+                    case Right(server) => answer(server, message, request)
                   }
       }
+
+  /** Answers one validated request with `server`: plain JSON, or an SSE stream
+    * when the request emits notifications and `request` accepts one. For
+    * transports that do their own checks first and need the same answer.
+    */
+  def answer[F[_]: Concurrent](server: ServerHandler[F], message: JsonRpcMessage.Request, request: Request[F]): F[Response[F]] =
+    if acceptsEventStream(request) then streamed(server, message)
+    else server.handleRecovering(message).map(replied)
+
+  private def replied[F[_]](reply: Option[JsonRpcMessage]): Response[F] = reply match
+    case Some(message) => json(statusOf(message), Wire.encode(message))
+    case None          => Response[F](Status.Accepted)
+
+  private def acceptsEventStream[F[_]](request: Request[F]): Boolean =
+    request.headers.get[headers.Accept].exists(_.values.exists(_.mediaRange.satisfiedBy(MediaType.`text/event-stream`)))
+
+  /** Runs the request with a sink, and answers with SSE only once a
+    * notification arrives ahead of the reply. One queue carries both, in order,
+    * so the first item decides: a reply means nothing was emitted before it.
+    */
+  private def streamed[F[_]](server: ServerHandler[F], message: JsonRpcMessage)(using F: Concurrent[F]): F[Response[F]] =
+    for
+      queue <- Queue.unbounded[F, Either[JsonRpcMessage.Notification, Option[JsonRpcMessage]]]
+      fiber <- server.handleEmittingRecovering(message, n => queue.offer(Left(n))).flatMap(reply => queue.offer(Right(reply))).start
+      first <- queue.take
+    yield first match
+      case Right(reply) => replied(reply)
+      case Left(notification) =>
+        val rest = Stream.fromQueueUnterminated(queue).takeThrough(_.isLeft)
+        val events = (Stream.emit(Left(notification)) ++ rest).collect {
+          case Left(n)            => ServerSentEvent(data = Some(Wire.encode(n)))
+          case Right(Some(reply)) => ServerSentEvent(data = Some(Wire.encode(reply)))
+        }
+        // A client that hangs up stops the request with it.
+        Response[F](Status.Ok).withEntity(events.onFinalize(fiber.cancel))
 
   /** The header checks of "Server Validation", in the order the spec lists them. */
   private def headerProblem[F[_]](request: Request[F], method: String, params: Option[Json]): Option[JsonRpcError] =

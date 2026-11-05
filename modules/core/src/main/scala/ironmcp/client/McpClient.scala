@@ -68,14 +68,18 @@ final class McpClient[F[_]] private (
 
   val capabilities: ClientCapabilities = handlers.capabilities
 
-  private val meta: Json = RequestMeta(LatestProtocolVersion, capabilities, Some(info)).asJson
+  private val baseMeta: RequestMeta = RequestMeta(LatestProtocolVersion, capabilities, Some(info))
+  private val meta: Json            = baseMeta.asJson
 
-  /** Sends one request; `params` gets the `_meta` envelope added. */
-  def request[R: Decoder](method: String, params: JsonObject = JsonObject.empty): F[R] =
+  /** Sends one request; `params` gets the `_meta` envelope added, with
+    * `progressToken` when the caller wants progress for it.
+    */
+  def request[R: Decoder](method: String, params: JsonObject = JsonObject.empty, progressToken: Option[ProgressToken] = None): F[R] =
+    val envelope = progressToken.fold(meta)(token => baseMeta.copy(progressToken = Some(token)).asJson)
     for
       id      <- ids.updateAndGet(_ + 1)
       name    <- F.fromEither(method.refineEither[Not[Empty]].leftMap(_ => McpClientError.Malformed("empty method name")))
-      message  = new JsonRpcMessage.Request(RequestId.Num(id), name, Some(Json.fromJsonObject(params.add("_meta", meta))))
+      message  = new JsonRpcMessage.Request(RequestId.Num(id), name, Some(Json.fromJsonObject(params.add("_meta", envelope))))
       reply   <- transport.request(message)
       result <- reply match
                   case JsonRpcMessage.Success(_, json) =>
@@ -92,10 +96,20 @@ final class McpClient[F[_]] private (
   /** Every tool, following `nextCursor` to the end. */
   def allTools: F[List[Tool]] = all(listTools(_).map(r => (r.tools, r.nextCursor)))
 
-  def callTool(name: String, arguments: JsonObject = JsonObject.empty, retry: Retry = Retry.none): F[CallToolResult | InputRequiredResult] =
+  /** `tools/call`. With a `progressToken`, the server may send
+    * `notifications/progress` for it, which reach the transport's
+    * `onNotification`.
+    */
+  def callTool(
+      name: String,
+      arguments: JsonObject = JsonObject.empty,
+      retry: Retry = Retry.none,
+      progressToken: Option[ProgressToken] = None
+  ): F[CallToolResult | InputRequiredResult] =
     request[CallToolResult | InputRequiredResult](
       Method.ToolsCall.wire,
-      retrying(JsonObject("name" -> name.asJson, "arguments" -> Json.fromJsonObject(arguments)), retry)
+      retrying(JsonObject("name" -> name.asJson, "arguments" -> Json.fromJsonObject(arguments)), retry),
+      progressToken
     )(using McpClient.orInputRequired[CallToolResult])
 
   def listResources(cursor: Option[String] = None): F[ListResourcesResult] =
