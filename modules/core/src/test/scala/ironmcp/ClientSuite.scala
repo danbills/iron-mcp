@@ -141,3 +141,10 @@ class ClientSuite extends CatsEffectSuite:
       info = Implementation(name = "suite-client", version = "9.9.9"))
       .flatMap(_.listTools())
       .map(r => assertEquals(r._meta.flatMap(_.extra.get("seen")).flatMap(_.hcursor.get[String]("name").toOption), Some("suite-client")))
+
+  test("a tool's properties keep their declared order, past four of them"):
+    final case class Six(f: Int, e: Int, d: Int, c: Int, b: Int, a: Int) derives Decoder, JsonSchemaOf
+    val six = McpTool[Six]("six", "Six fields.")(_ => IO.pure("ok"))
+    McpClient[IO](ClientTransport.inProcess(McpServer[IO](info = Implementation(name = "order", version = "0"), tools = Some(ToolSet.of(six)))))
+      .flatMap(_.allTools)
+      .map(tools => assertEquals(tools.head.inputSchema.properties.keys.toList, List("f", "e", "d", "c", "b", "a")))
