@@ -64,6 +64,41 @@ has the schema of the type it wraps. `JsonSchemaOf.strict(schema)` rewrites a sc
 for OpenAI's strict structured outputs: every object closed, every property
 required, optional ones nullable, `oneOf` as `anyOf`.
 
+### Asking the user mid-call (elicitation)
+
+In 2026-07-28 a server never sends the client a request. A tool that needs the
+user answers `input_required` with the questions embedded, and the client calls
+again with the answers (multi round-trip requests). `McpTool.interactive` does
+both halves with types:
+
+```scala
+final case class Details(
+  title: String :| ((Titled["Meeting title"] & MinLength[1]) DescribedAs "Shown on the room display.")
+) derives Decoder, JsonSchemaOf
+
+given RequestStateCodec = RequestStateCodec.hmac(key)   // key: at least 32 bytes
+
+val book = McpTool.interactive[BookArgs]("book_meeting", "Books a room.") { (args, ctx) =>
+  IO.pure(ctx.requestState match
+    case None => ctx.ask("details")("details" -> Elicit.form[Details]("What is the meeting?"))
+    case Some(_) =>
+      ctx.accepted[Details]("details") match
+        case Some(details) => Interaction.done(s"Booked ${args.room}.")
+        case None          => Interaction.done("Not booked."))
+}
+```
+
+The form's `requestedSchema` is derived from `Details`, and `ctx.accepted` decodes
+the user's answer back into it with every refinement checked. `Titled["..."]` and
+`Default[v]` add `title` and `default` keywords and constrain nothing.
+
+`requestState` travels through the client, which could edit it to skip a step.
+The `RequestStateCodec` in scope seals it with HMAC-SHA256 over the tool name, the
+arguments and the state, and a retry carrying an altered or replayed state never
+reaches the handler. Not sealing has to be spelled out:
+`RequestStateCodec.unprotected`. A client that did not declare `elicitation` gets
+an `isError` result instead of a question it cannot answer.
+
 ## Why not the official Java SDK
 
 Two reasons, in order of weight:
@@ -217,7 +252,26 @@ from a null one, and several hosts reject `null` where they expect omission.
 | `protocol/{Tools,Resources,Prompts,Completion,Discover,Subscriptions,Notifications}.scala` | the full server surface |
 | `server/Providers.scala` | one trait per capability, polymorphic in `F` |
 | `server/McpServer.scala` | dispatch, version checks, capability derivation |
+| `server/McpTool.scala`, `server/Interaction.scala` | typed tools; `McpTool.interactive`, `Elicit`, `RequestStateCodec` |
 | `transport/{Wire,Stdio}.scala` | newline-delimited JSON-RPC on stdin/stdout |
+| `modules/http` (`iron-mcp-http`) | Streamable HTTP on http4s ember, JVM-only |
+
+### Streamable HTTP
+
+```scala
+libraryDependencies += "io.github.danbills" %% "iron-mcp-http" % "<version>"
+
+McpHttp.serve(McpHttp.routes(server), port = 5000).useForever
+```
+
+Stateless, as the revision intends: one POST per message, a JSON reply per
+request, `202` for a notification, `405` for GET and DELETE. `MCP-Protocol-Version`,
+`Mcp-Method` and `Mcp-Name` are required and checked against the body (`400`,
+`-32020` on a mismatch); an unsupported version is `400` with `-32022`, an
+unknown method `404` with `-32601`. `Origin` and `Host` must be loopback by
+default (`403` otherwise, against DNS rebinding), and bodies over 4 MiB are
+refused unread. `McpHttp.routesFor(config)(request => ...)` builds the server per
+request, which is how an access token's claims reach the tools.
 
 ## Using it
 
@@ -231,6 +285,7 @@ Published for the JVM and Scala Native 0.5 from the same source.
 
 ```bash
 sbt "coreJVM/Test/testFull"   # protocol and schema suites
+sbt "http/Test/testFull"      # Streamable HTTP, in memory
 sbt "weather/Test/testFull" "nasa/Test/testFull"   # the example tools, offline
 sbt "demoJVM/run"             # stdio server on the JVM
 sbt "demoNative/nativeLink"   # native binary
@@ -269,20 +324,20 @@ harness spawns this per session.
 ## Stack
 
 Scala 3.9.0 · Iron 3.3.2 · Circe 0.14.16 · cats-effect 3.7.0 · fs2 3.13.0 ·
-Scala Native 0.5.12 · sbt 2.0.9. The JVM-only examples add http4s 0.23.37
-(Ember client) and cats-free 2.13.0.
+Scala Native 0.5.12 · sbt 2.0.9. The JVM-only HTTP module and examples add
+http4s 0.23.37 (Ember) and cats-free 2.13.0.
 
 ## Status
 
 The protocol layer, dispatcher and stdio transport are complete and tested,
-on the JVM and Scala Native. Two example servers call real APIs:
+on the JVM and Scala Native; Streamable HTTP and elicitation (MRTR) on the JVM. Two example servers call real APIs:
 `modules/weather` (weather.gov forecast, conditions and alerts; no key) and
 `modules/nasa` (Astronomy Picture of the Day; `NASA_API_KEY`). Their tools are
 `Free` programs over request algebras, tested offline.
 
-Not yet built: resource, prompt and completion providers beyond the traits, an
-HTTP transport, and capability providers such as email, web search or computer
-use.
+Not yet built: resource, prompt and completion providers beyond the traits,
+SSE responses (progress and log notifications), a client, the Tasks extension,
+and capability providers such as email, web search or computer use.
 
 ## Releasing
 

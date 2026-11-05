@@ -8,7 +8,9 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
   - `protocol/` — spec types: `JsonRpc.scala`, `Meta.scala`, one file per capability, `Refined.scala` (Iron aliases from the spec)
   - `schema/` — compile-time macro deriving JSON Schema from Iron types
   - `server/` — `Providers.scala`, `McpServer.scala` (stateless dispatch), `McpTool.scala` (typed tools, `ToolSet`); all polymorphic in `F[_]`
+  - `server/Interaction.scala` — `McpTool.interactive` support: `ToolContext`, `Elicit`, `RequestStateCodec` (HMAC-sealed `requestState`; `HmacSha256.scala` is plain Scala because Scala Native has no `javax.crypto`)
   - `transport/` — `Wire.scala`, `Stdio.scala`
+- `modules/http/` — `iron-mcp-http`: Streamable HTTP (`McpHttp`) on http4s ember, JVM-only
 - `modules/core/src/test/` — munit test suites
 - `modules/demo/` — runnable stdio demo server
 - `modules/weather/` — example MCP server over the NWS (weather.gov) API, JVM-only: `Nws.scala` (models + `NwsOp` algebra + `Nws[G]` smart constructors), `NwsHttp4s.scala` (interpreter), `WeatherTools.scala` (tools as `Free` programs), `Main.scala` (wiring)
@@ -19,6 +21,7 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
 
 ```bash
 sbt "coreJVM/Test/testFull"   # run tests
+sbt "http/Test/testFull"      # HTTP transport tests (in memory, no sockets)
 sbt "demoJVM/run"             # start the stdio demo server on the JVM
 sbt "weather/run"             # run the weather.gov example (needs no key)
 sbt "nasa/run"                # run the NASA APOD example (set NASA_API_KEY)
@@ -60,6 +63,7 @@ Pull requests should name the protocol area changed, justify any new hand-writte
 
 - Never introduce reflection, Jackson, or runtime schema generation — they break the Scala Native and GraalVM story.
 - Do not re-enable `LTO.thin` in the Native build (breaks linking); tool failures return `isError: true` results, never JSON-RPC errors.
-- `McpServer.handle` must stay a pure function of one message with no per-client state.
+- `McpServer.handle` must stay a pure function of one message with no per-client state. Per-request context (auth claims) comes in through `McpHttp.routesFor`, which builds a server per request.
+- Never trust `requestState` unsealed: interactive tools take a `RequestStateCodec`; do not add a default `given` for `unprotected`.
 - Keep core free of `IO` and of cats-free: ask for the weakest typeclass that works (`Applicative` for dispatch, `ApplicativeThrow` for tools, `Async` + `LiftIO` only in `Stdio`).
 - Outbound calls in example tools go through an algebra and interpreter, not inline http4s in the handler.

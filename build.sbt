@@ -85,6 +85,19 @@ lazy val demo = crossProject(JVMPlatform, NativePlatform)
     publish / skip := true
   )
 
+// Streamable HTTP. JVM-only: http4s ember does not run on Scala Native.
+lazy val http = (project in file("modules/http"))
+  .dependsOn(core.jvm)
+  .settings(
+    name        := "iron-mcp-http",
+    description := "Streamable HTTP transport (revision 2026-07-28, stateless) for iron-mcp, on http4s ember.",
+    libraryDependencies ++= Seq(
+      "org.http4s"    %% "http4s-ember-server" % http4sVersion,
+      "org.scalameta" %% "munit"               % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
+    )
+  )
+
 lazy val weather = (project in file("modules/weather"))
   .dependsOn(core.jvm)
   .settings(
@@ -122,5 +135,5 @@ lazy val nasa = (project in file("modules/nasa"))
   )
 
 lazy val root = (project in file("."))
-  .aggregate(core.jvm, core.native, demo.jvm, demo.native, weather, nasa)
+  .aggregate(core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa)
   .settings(name := "iron-mcp", publish / skip := true)
