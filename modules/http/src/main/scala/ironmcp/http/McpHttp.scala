@@ -9,7 +9,7 @@ import fs2.io.net.Network
 import io.circe.Json
 import io.github.iltotore.iron.autoRefine
 import ironmcp.protocol.*
-import ironmcp.server.McpServer
+import ironmcp.server.ServerHandler
 import ironmcp.transport.Wire
 import org.http4s.*
 import org.http4s.ember.server.EmberServerBuilder
@@ -67,12 +67,12 @@ object McpHttp:
   val NameHeader: CIString            = McpHeaders.Name
 
   /** Routes for a server that is the same for every request. */
-  def routes[F[_]: Concurrent](server: McpServer[F], config: Config): HttpRoutes[F] =
+  def routes[F[_]: Concurrent](server: ServerHandler[F], config: Config): HttpRoutes[F] =
     routesFor(config)(_ => Concurrent[F].pure(Right(server)))
 
-  def routes[F[_]: Concurrent](server: McpServer[F]): HttpRoutes[F] = routes(server, Config())
+  def routes[F[_]: Concurrent](server: ServerHandler[F]): HttpRoutes[F] = routes(server, Config())
 
-  def routesFor[F[_]](config: Config)(serverFor: Request[F] => F[Either[Response[F], McpServer[F]]])(using
+  def routesFor[F[_]](config: Config)(serverFor: Request[F] => F[Either[Response[F], ServerHandler[F]]])(using
       F: Concurrent[F]
   ): HttpRoutes[F] =
     Kleisli { (request: Request[F]) =>
@@ -104,7 +104,7 @@ object McpHttp:
   private def post[F[_]](
       request: Request[F],
       config: Config,
-      serverFor: Request[F] => F[Either[Response[F], McpServer[F]]]
+      serverFor: Request[F] => F[Either[Response[F], ServerHandler[F]]]
   )(using F: Concurrent[F]): F[Response[F]] =
     val origin = request.headers.get(CIString("Origin")).map(_.head.value)
     val host   = request.headers.get(CIString("Host")).map(_.head.value)

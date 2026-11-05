@@ -115,6 +115,19 @@ lazy val otel = (project in file("modules/otel"))
     )
   )
 
+lazy val tasks = crossProject(JVMPlatform, NativePlatform)
+  .crossType(CrossType.Pure)
+  .in(file("modules/tasks"))
+  .dependsOn(core)
+  .settings(
+    name        := "iron-mcp-tasks",
+    description := "The Tasks extension (io.modelcontextprotocol/tasks, SEP-2663) for iron-mcp, client and server.",
+    libraryDependencies ++= Seq(
+      "org.scalameta" %% "munit"             % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect" % munitCeVersion % Test
+    )
+  )
+
 lazy val auth = (project in file("modules/auth"))
   .dependsOn(core.jvm, http)
   .settings(
@@ -130,7 +143,7 @@ lazy val auth = (project in file("modules/auth"))
   )
 
 lazy val docs = (project in file("modules/docs"))
-  .dependsOn(core.jvm, http, auth)
+  .dependsOn(core.jvm, http, auth, tasks.jvm)
   .settings(
     name := "iron-mcp-docs",
     publish / skip := true,
@@ -179,5 +192,5 @@ lazy val nasa = (project in file("modules/nasa"))
   )
 
 lazy val root = (project in file("."))
-  .aggregate(core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, otel, auth)
+  .aggregate(core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, otel, auth, tasks.jvm, tasks.native)
   .settings(name := "iron-mcp", publish / skip := true)

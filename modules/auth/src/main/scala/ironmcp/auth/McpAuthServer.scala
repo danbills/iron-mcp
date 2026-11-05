@@ -6,7 +6,7 @@ import cats.syntax.all.*
 import io.circe.Json
 import io.circe.syntax.*
 import ironmcp.http.{McpHeaders, McpHttp}
-import ironmcp.server.McpServer
+import ironmcp.server.ServerHandler
 import org.http4s.*
 import org.http4s.circe.*
 import org.http4s.headers.`Content-Type`
@@ -35,7 +35,7 @@ object McpAuthServer:
 
   /** Routes for an MCP server where all tools share the same claims. */
   def routes[F[_]: Concurrent](
-      server: McpServer[F],
+      server: ServerHandler[F],
       validator: TokenValidator[F],
       config: Config
   ): HttpRoutes[F] =
@@ -46,7 +46,7 @@ object McpAuthServer:
       validator: TokenValidator[F],
       config: Config
   )(
-      serverFor: (Request[F], TokenClaims) => F[Either[Response[F], McpServer[F]]]
+      serverFor: (Request[F], TokenClaims) => F[Either[Response[F], ServerHandler[F]]]
   ): HttpRoutes[F] =
     val wellKnownRoutes = metadataRoutes(config)
     val protectedMcp = createMcpRoutes(validator, config, serverFor)
@@ -70,7 +70,7 @@ object McpAuthServer:
   private def createMcpRoutes[F[_]: Concurrent](
       validator: TokenValidator[F],
       config: Config,
-      serverFor: (Request[F], TokenClaims) => F[Either[Response[F], McpServer[F]]]
+      serverFor: (Request[F], TokenClaims) => F[Either[Response[F], ServerHandler[F]]]
   ): HttpRoutes[F] =
     McpHttp.routesFor[F](config.mcpConfig) { (req: Request[F]) =>
       // Extract Bearer token

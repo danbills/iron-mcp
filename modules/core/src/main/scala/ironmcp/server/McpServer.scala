@@ -26,8 +26,10 @@ final class McpServer[F[_]](
     val prompts: Option[PromptProvider[F]] = None,
     val completions: Option[CompletionProvider[F]] = None,
     val subscriptions: Option[SubscriptionProvider[F]] = None,
-    val discoveryTtlMs: DiscoveryTtlMs = 300000L
-)(using F: Applicative[F]):
+    val discoveryTtlMs: DiscoveryTtlMs = 300000L,
+    val extensions: Option[Map[String, io.circe.JsonObject]] = None,
+    val customHandlers: Map[String, Option[Json] => F[Either[JsonRpcError, Json]]] = Map.empty
+)(using F: Applicative[F]) extends ServerHandler[F]:
 
   /** Capabilities are derived from the providers, never declared separately —
     * a server cannot advertise tools it has no way to serve.
@@ -36,7 +38,8 @@ final class McpServer[F[_]](
     tools = tools.as(ToolsCapability(listChanged = Some(false))),
     resources = resources.as(ResourcesCapability(subscribe = subscriptions.as(true), listChanged = Some(false))),
     prompts = prompts.as(PromptsCapability(listChanged = Some(false))),
-    completions = completions.as(io.circe.JsonObject.empty)
+    completions = completions.as(io.circe.JsonObject.empty),
+    extensions = extensions
   )
 
   private val serverMeta = Some(ResultMeta(serverInfo = Some(info)))
@@ -143,6 +146,9 @@ final class McpServer[F[_]](
             guarded(request._meta)(provider.listen(request).map(_.asJson))
           }
         }
+
+      case Method.Unknown(raw) if customHandlers.contains(raw) =>
+        customHandlers(raw)(params)
 
       case other =>
         F.pure(

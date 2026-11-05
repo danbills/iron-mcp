@@ -14,6 +14,7 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
 - `modules/http/` — `iron-mcp-http`, JVM-only: `McpHttp` (server), `McpHttpClient` (client), `McpHeaders` (the mirrored headers and their base64 rule)
 - `modules/otel/` — `iron-mcp-otel`, JVM-only opt-in module: OpenTelemetry instrumentation (`OtelServer`, `OtelHttp`, `OtelStdio`, `OtelClient`, `McpTelemetry`, `TraceContext`, `ErrorLadder`, `CostHistogram`) adhering to MCP GenAI semantic conventions, Section 10.2 error ladder and cost histograms
 - `modules/auth/` — `iron-mcp-auth`, JVM-only opt-in module: OAuth 2.1 & Step-Up authorization (RFC 9728 protected resource metadata, RFC 8707 audience binding, per-tool scope enforcement with 403 challenges, `StepUpClient` with Scope-Union Rule, reflection-free RS256/HS256 `Jwt`, and Keycloak coordination)
+- `modules/tasks/` — `iron-mcp-tasks`, cross-built (`tasksJVM` / `tasksNative`): Tasks extension (`io.modelcontextprotocol/tasks`, SEP-2663, Handbook §7.3) with `TaskStore`, `TaskServer` background fiber management and cooperative cancellation, and `TasksClient` with transparent polling (`callToolWithPolling`)
 - `modules/docs/` — mdoc documentation runner verifying markdown guides against compiled modules
 - `modules/core/src/test/` — munit test suites
 - `modules/demo/` — runnable stdio demo server
@@ -28,6 +29,8 @@ sbt "coreJVM/Test/testFull"   # run tests
 sbt "http/Test/testFull"      # HTTP transport tests (in memory, no sockets)
 sbt "otel/Test/testFull"      # OpenTelemetry instrumentation tests
 sbt "auth/Test/testFull"      # OAuth 2.1 & Step-Up authorization tests
+sbt "tasksJVM/Test/testFull"  # Tasks extension tests (JVM)
+sbt "tasksNative/Test/testFull" # Tasks extension tests (Scala Native)
 sbt "docs/run"               # compile and verify markdown docs with mdoc
 sbt "demoJVM/run"             # start the stdio demo server on the JVM
 sbt "weather/run"             # run the weather.gov example (needs no key)

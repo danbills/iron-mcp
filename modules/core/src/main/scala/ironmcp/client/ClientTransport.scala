@@ -9,7 +9,7 @@ import fs2.Stream
 import io.circe.Json
 import io.github.iltotore.iron.autoRefine
 import ironmcp.protocol.*
-import ironmcp.server.McpServer
+import ironmcp.server.ServerHandler
 import ironmcp.transport.Wire
 
 /** How a client reaches a server: send a request, get its response.
@@ -27,7 +27,7 @@ object ClientTransport:
   /** A server in the same process. Messages still go through [[Wire]] both
     * ways, so what is tested is what a remote client would see.
     */
-  def inProcess[F[_]](server: McpServer[F])(using F: MonadThrow[F]): ClientTransport[F] = new ClientTransport[F]:
+  def inProcess[F[_]](server: ServerHandler[F])(using F: MonadThrow[F]): ClientTransport[F] = new ClientTransport[F]:
     private def overWire(message: JsonRpcMessage): F[JsonRpcMessage] =
       F.fromEither(Wire.decode(Wire.encode(message)).leftMap(e => McpClientError.Malformed(e.message: String)))
 
