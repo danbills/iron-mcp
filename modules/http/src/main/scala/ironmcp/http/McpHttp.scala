@@ -128,7 +128,7 @@ object McpHttp:
                   serverFor(request).flatMap {
                     case Left(response) => F.pure(response)
                     case Right(server) =>
-                      server.handle(message).map {
+                      server.handleRecovering(message).map {
                         case Some(reply) => json(statusOf(reply), Wire.encode(reply))
                         case None        => Response[F](Status.Accepted)
                       }

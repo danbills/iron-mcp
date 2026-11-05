@@ -37,7 +37,7 @@ object Stdio:
   private def respond[F[_]: Async](server: McpServer[F], line: String): F[Option[String]] =
     Wire.decode(line) match
       case Left(error)    => Async[F].pure(Some(Wire.errorResponse(error)))
-      case Right(message) => server.handle(message).map(_.map(Wire.encode))
+      case Right(message) => server.handleRecovering(message).map(_.map(Wire.encode))
 
   /** Convenience for a main method. */
   def run[F[_]: {Async, LiftIO}](server: McpServer[F]): Stream[F, Nothing] = Stream.eval(serve(server)).drain

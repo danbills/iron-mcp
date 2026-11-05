@@ -1,7 +1,7 @@
 package ironmcp
 package server
 
-import cats.Applicative
+import cats.{Applicative, ApplicativeThrow}
 import cats.syntax.all.*
 import io.circe.{Decoder, Encoder, Json}
 import io.circe.syntax.*
@@ -54,6 +54,22 @@ final class McpServer[F[_]](
     // A stateless server never initiates a request, so it can never be the
     // recipient of a response.
     case JsonRpcMessage.Success(_, _) | JsonRpcMessage.Failure(_, _) => F.pure(None)
+
+  /** [[handle]], for transports: a provider that fails becomes an error
+    * response instead of failing the stream. An [[McpException]] carries the
+    * error to send; anything else is `-32603` without its message, which may
+    * hold internals the client should not see.
+    */
+  def handleRecovering(message: JsonRpcMessage)(using F: ApplicativeThrow[F]): F[Option[JsonRpcMessage]] =
+    handle(message).handleError { error =>
+      val id = message match
+        case JsonRpcMessage.Request(id, _, _) => Some(id)
+        case _                                => None
+      val reply = error match
+        case McpException(rpc) => rpc
+        case _                 => JsonRpcError(ErrorCode.InternalError, "internal error")
+      id.map(requestId => JsonRpcMessage.Failure(Some(requestId), reply))
+    }
 
   private def dispatch(method: Method, params: Option[Json]): F[Either[JsonRpcError, Json]] =
     method match
@@ -184,6 +200,16 @@ final class McpServer[F[_]](
     checkVersion(meta) match
       case Left(error) => F.pure(Left(error))
       case Right(_)    => run.map(Right(_))
+
+/** Raised by a provider to answer with a specific JSON-RPC error, such as
+  * `-32002` for a resource that does not exist. Tools should not raise it: a
+  * tool's failure is an `isError` result the model can read.
+  */
+final case class McpException(error: JsonRpcError) extends RuntimeException(error.message: String)
+
+object McpException:
+  def resourceNotFound(uri: String): McpException =
+    McpException(JsonRpcError(ErrorCode.ResourceNotFound, "resource not found", Some(io.circe.Json.obj("uri" -> io.circe.Json.fromString(uri)))))
 
 extension (self: String)
   private[server] def assumeNonEmpty: NonEmptyString =
