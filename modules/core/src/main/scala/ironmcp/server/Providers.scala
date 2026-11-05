@@ -23,7 +23,7 @@ trait ToolProvider[F[_]]:
 trait ResourceProvider[F[_]](using F: Applicative[F]):
   def list(params: ListResourcesParams): F[ListResourcesResult]
   def read(params: ReadResourceParams): F[ReadResourceResult | InputRequiredResult]
-  def templates(params: ListResourcesParams): F[ListResourceTemplatesResult] =
+  def templates(@annotation.unused params: ListResourcesParams): F[ListResourceTemplatesResult] =
     F.pure(ListResourceTemplatesResult(Nil, 0L, CacheScope.`private`))
 
 trait PromptProvider[F[_]]:

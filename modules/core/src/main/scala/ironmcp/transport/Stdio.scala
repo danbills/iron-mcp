@@ -19,9 +19,9 @@ import ironmcp.server.McpServer
 object Stdio:
 
   // LiftIO is required by fs2's stdin/stdout on Scala Native and unused on the
-  // JVM; this source is shared by both.
-  @annotation.nowarn("msg=unused")
-  def serve[F[_]: {Async, LiftIO}](server: McpServer[F]): F[Unit] =
+  // JVM; this source is shared by both, so it is marked rather than silenced
+  // (a @nowarn would itself warn on Native, where there is nothing to silence).
+  def serve[F[_]](server: McpServer[F])(using async: Async[F], @annotation.unused liftIO: LiftIO[F]): F[Unit] =
     fs2.io
       .stdinUtf8[F](8192)
       .through(text.lines)

@@ -62,7 +62,7 @@ private[schema] object ConstraintSchemaMacros:
           case (Some(("StrictEqual", _)), Some(("Less", value)))    => List("maximum" -> value)
           case _                                                    => Nil
 
-      case applied @ AppliedType(constructor, args) =>
+      case AppliedType(constructor, args) =>
         constructor.typeSymbol.name match
           // Iron's human-readable wrapper; the meaning is underneath.
           case "DescribedAs" => read(args.head)

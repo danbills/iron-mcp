@@ -33,7 +33,7 @@ Releases are cut locally (no CI): `git tag -a v0.1.0`, then `sbt +publishSigned`
 ## Coding Style & Naming Conventions
 
 - Scala 3.9.0, significant indentation (no braces).
-- Strict compiler flags (`-Wunused:all -Wvalue-discard -deprecation -feature -unchecked`), without `-Werror`. `main` carries 14 pre-existing unused warnings; new code must add none (check with a genuine compile — see below).
+- Strict compiler flags (`-Wunused:all -Wvalue-discard -deprecation -feature -unchecked -Werror`): any warning fails the build, in every module, tests and Scala Native included. Shared JVM/Native code must be clean on both; prefer `@annotation.unused` to `@nowarn`, which warns on the platform where it suppresses nothing.
 - No reflection, no Jackson, no hand-written JSON Schema: codecs derive at compile time from `Mirror` (Circe); hand-write one only where derivation cannot express the shape.
 - Express constraints as Iron refinement types (`String :| (Not[Empty] DescribedAs "...")`); the schema macro reads them. `DescribedAs` goes on the outermost type only.
 - Names follow domain vocabulary (`McpServer`, `ToolProvider`); one file per concept.
@@ -53,7 +53,7 @@ Pull requests should name the protocol area changed, justify any new hand-writte
 ## sbt 2 Behavior That Bites
 
 - **`test` is incremental**: it runs only suites affected by changed code (old `testQuick`). A short or empty run is not a pass. Use `Test/testFull`.
-- **Compile results are cached on disk, across directories and worktrees**, and `clean` does not evict them. A cache hit prints `[success]` in ~0 s and **does not replay warnings**, so "no warnings" after a fast compile proves nothing. To see the real warnings, change an input (e.g. append a comment to any source, then revert it) and run `clean; compile`. `main` itself carries ~14 pre-existing `-Wunused` warnings; compare against that baseline, not zero.
+- **Compile results are cached on disk, across directories and worktrees**, and `clean` does not evict them. A cache hit prints `[success]` in ~0 s and does not replay warnings. Under `-Werror` that is safe (a cached success was compiled clean), but compile the Native side too (`coreNative/Test/compile; demoNative/compile`): a warning can exist on one platform only.
 - **`sbt --client` joins its arguments into one command line**: chain with `;` inside one quoted argument (`sbt --client "a; b"`). Plain `sbt -batch` accepts the same form.
 - **JDK updated in place** makes the running server fail to spawn processes (`Cannot run program "/usr/bin/clang": Failed to exec spawn helper`), which breaks `nativeLink`. Run `sbt --client shutdown` and retry.
 - **`export <proj>/Runtime/fullClasspath` prints virtual paths** (`${OUT}`, `${CSR_CACHE}`, `>sha256-…` suffixes). Map `${OUT}` → `target/out`, `${CSR_CACHE}` → `~/.cache/coursier/v1`, and strip the suffix to get a `java -cp` classpath. That is the way to drive a stdio server by hand, since `sbt run` does not forward stdin.

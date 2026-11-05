@@ -312,11 +312,11 @@ harness spawns this per session.
 - **Scala 3.9.0**, the next LTS (succeeding 3.3). Native works because
   `nscplugin_3.9.0` is published for Scala Native 0.5.12; the compiler must
   match the Scala version exactly.
-- **Warnings are not errors.** The build runs `-Wunused:all -Wvalue-discard`
-  without `-Werror`, and `main` carries 14 unused-import/parameter warnings
-  (mostly unused `iron.circe.given` imports in `protocol/` and `schema/`). New
-  code should add none. sbt 2 caches compile results and a cache hit replays no
-  warnings, so see [AGENTS.md](AGENTS.md) before trusting a quiet build.
+- **Warnings are errors.** The build runs `-Wunused:all -Wvalue-discard -Werror`
+  on every module, test sources and Scala Native included. Code shared between
+  the JVM and Native must be clean on both: a `@nowarn` that suppresses
+  something on one platform is itself a warning on the other, so mark the
+  symbol `@annotation.unused` instead (see `Stdio.serve`).
 - **Scala 3.9.0 crashes on clause interleaving with named arguments**
   (`unexpected tree for type application`), which is why `McpTool.apply`
   returns a `Builder` instead of taking a second type-parameter clause.

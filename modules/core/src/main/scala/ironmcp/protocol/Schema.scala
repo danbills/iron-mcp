@@ -3,7 +3,6 @@ package protocol
 
 import io.circe.*
 import io.circe.syntax.*
-import io.github.iltotore.iron.circe.given
 
 /** A tool's input schema. The spec fixes `type: "object"`, so that is not a
   * field anyone can set wrongly — it is emitted by the codec.

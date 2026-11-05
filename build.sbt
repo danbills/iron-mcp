@@ -50,7 +50,8 @@ ThisBuild / scalacOptions ++= Seq(
   "-feature",
   "-unchecked",
   "-Wunused:all",
-  "-Wvalue-discard"
+  "-Wvalue-discard",
+  "-Werror"
 )
 
 // No reflection anywhere in this build: every codec is derived at compile time
