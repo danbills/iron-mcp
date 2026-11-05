@@ -34,7 +34,13 @@ type MetaKey = String :| MetaKeyC
 type Cursor = String :| Not[Empty]
 
 type Uri      = String :| Not[Empty]
-type MimeType = String :| Match["^[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+$"]
+/** A media type, with optional parameters (RFC 6838, RFC 9110 §8.3.1), such as
+  * `text/html;profile=mcp-app`, the MCP Apps resource type.
+  */
+type MimeTypeC = Match[
+  "^[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+(?:[ \\t]*;[ \\t]*[a-zA-Z0-9!#$&^_.+-]+=(?:[a-zA-Z0-9!#$&^_.+-]+|\"[^\"]*\"))*$"
+]
+type MimeType = String :| MimeTypeC
 
 /** JSON-RPC forbids fractional ids in practice; MCP allows string or number. */
 type IdNumber = Long

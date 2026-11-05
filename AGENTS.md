@@ -7,7 +7,7 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
 - `modules/core/src/main/` — library source (`coreJVM` / `coreNative`)
   - `protocol/` — spec types: `JsonRpc.scala`, `Meta.scala`, one file per capability, `Refined.scala` (Iron aliases from the spec)
   - `schema/` — compile-time macro deriving JSON Schema from Iron types
-  - `server/` — `Providers.scala`, `McpServer.scala` (stateless dispatch), `McpTool.scala` (typed tools, `ToolSet`); all polymorphic in `F[_]`
+  - `server/` — `Providers.scala`, `McpServer.scala` (stateless dispatch), `McpTool.scala` (typed tools, `ToolSet`; `McpTool.reporting` for progress), `Emit.scala` (progress notifications through a per-request `NotificationSink`); all polymorphic in `F[_]`
   - `server/Interaction.scala` — `McpTool.interactive` support: `ToolContext`, `Elicit`, `RequestStateCodec` (HMAC-sealed `requestState`; `HmacSha256.scala` is plain Scala because Scala Native has no `javax.crypto`)
   - `transport/` — `Wire.scala`, `Stdio.scala`
   - `client/` — `McpClient.scala` (typed calls, `callToolGathering`, `InputHandlers`), `ClientTransport.scala` (`inProcess`, `lines`), `StdioClient.scala` (child processes), `McpClientError.scala`
@@ -15,6 +15,8 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
 - `modules/otel/` — `iron-mcp-otel`, JVM-only opt-in module: OpenTelemetry instrumentation (`OtelServer`, `OtelHttp`, `OtelStdio`, `OtelClient`, `McpTelemetry`, `TraceContext`, `ErrorLadder`, `CostHistogram`) adhering to MCP GenAI semantic conventions, Section 10.2 error ladder and cost histograms
 - `modules/auth/` — `iron-mcp-auth`, JVM-only opt-in module: OAuth 2.1 & Step-Up authorization (RFC 9728 protected resource metadata, RFC 8707 audience binding, per-tool scope enforcement with 403 challenges, `StepUpClient` with Scope-Union Rule, reflection-free RS256/HS256 `Jwt`, and Keycloak coordination)
 - `modules/tasks/` — `iron-mcp-tasks`, cross-built (`tasksJVM` / `tasksNative`): Tasks extension (`io.modelcontextprotocol/tasks`, SEP-2663, Handbook §7.3) with `TaskStore`, `TaskServer` background fiber management and cooperative cancellation, and `TasksClient` with transparent polling (`callToolWithPolling`)
+- `modules/apps/` — `iron-mcp-apps`, cross-built (`appsJVM` / `appsNative`): MCP Apps (`io.modelcontextprotocol/ui`, Handbook §7.4): `McpApps` (extension id, `text/html;profile=mcp-app`, `clientSupports`), `withUi` on `McpTool` (`_meta.ui.resourceUri`, `Visibility`), `UiResources` serving `ui://` Views
+- `modules/health/` — MCP Apps example (port of the handbook's `health-dashboard`), JVM-only: `HealthOp` algebra, `SimulatedHealth` interpreter, `HealthTools`, a hand-written View in `resources/ironmcp/health/dashboard.html`
 - `modules/docs/` — mdoc documentation runner verifying markdown guides against compiled modules
 - `modules/core/src/test/` — munit test suites
 - `modules/demo/` — runnable stdio demo server
@@ -31,6 +33,8 @@ sbt "otel/Test/testFull"      # OpenTelemetry instrumentation tests
 sbt "auth/Test/testFull"      # OAuth 2.1 & Step-Up authorization tests
 sbt "tasksJVM/Test/testFull"  # Tasks extension tests (JVM)
 sbt "tasksNative/Test/testFull" # Tasks extension tests (Scala Native)
+sbt "appsJVM/Test/testFull"   # MCP Apps tests (also appsNative)
+sbt "health/run"              # run the MCP Apps health-dashboard example
 sbt "docs/run"               # compile and verify markdown docs with mdoc
 sbt "demoJVM/run"             # start the stdio demo server on the JVM
 sbt "weather/run"             # run the weather.gov example (needs no key)
@@ -73,7 +77,7 @@ Pull requests should name the protocol area changed, justify any new hand-writte
 
 - Never introduce reflection, Jackson, or runtime schema generation — they break the Scala Native and GraalVM story.
 - Do not re-enable `LTO.thin` in the Native build (breaks linking); tool failures return `isError: true` results, never JSON-RPC errors.
-- `McpServer.handle` must stay a pure function of one message with no per-client state. Per-request context (auth claims) comes in through `McpHttp.routesFor`, which builds a server per request.
+- `McpServer.handle` must stay a pure function of one message with no per-client state. Notifications a request emits (progress) go to a sink the transport passes in (`handleEmitting`), never to state on the server. No log notifications: 2026-07-28 deprecates `logging`. Per-request context (auth claims) comes in through `McpHttp.routesFor`, which builds a server per request.
 - Never trust `requestState` unsealed: interactive tools take a `RequestStateCodec`; do not add a default `given` for `unprotected`.
 - Keep core free of `IO` and of cats-free: ask for the weakest typeclass that works (`Applicative` for dispatch, `ApplicativeThrow` for tools, `MonadThrow` for `McpClient`, `Concurrent` for `ClientTransport.lines`, `Async` only for real stdio and process spawning). On Scala Native, `fs2.io.stdin/stdout/stderr` go through epoll, which refuses regular files: use blocking `System.in/out/err` (see `Stdio.serve`, `StdioClient`).
 - Outbound calls in example tools go through an algebra and interpreter, not inline http4s in the handler.

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Health Dashboard</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+    #summary { color: #555; }
+    #cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-top: 12px; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; border-left-width: 5px; }
+    .card.healthy { border-left-color: #2e9e5b; }
+    .card.degraded { border-left-color: #d99a1b; }
+    .card.down { border-left-color: #cc3b3b; }
+    .card h2 { font-size: 1rem; margin: 0 0 4px; }
+    .status { margin: 0 0 8px; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
+    dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 0; font-size: 0.85rem; }
+    dt { color: #777; }
+    dd { margin: 0; text-align: right; }
+    button { padding: 6px 14px; border-radius: 6px; border: 1px solid #bbb; background: #f5f5f5; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>System Health</h1>
+    <span id="summary">Waiting for data…</span>
+    <button id="refresh-btn">Refresh</button>
+  </header>
+  <div id="cards"></div>
+  <script>
+  // The MCP Apps View protocol, by hand: JSON-RPC 2.0 over postMessage with the
+  // host (the ext-apps `App` class does the same). The View initializes, then
+  // receives the tool's result as `ui/notifications/tool-result`, and calls
+  // server tools through the host with `tools/call`.
+  (function () {
+    "use strict";
+    const PROTOCOL_VERSION = "2026-01-26"; // ext-apps 2.0.3's LATEST_PROTOCOL_VERSION
+    const STATUSES = ["healthy", "degraded", "down"];
+    const pending = new Map();
+    let nextId = 1;
+    // Results can arrive from the first call and from refreshes in any order;
+    // only the most recently requested one may update the dashboard.
+    let latest = 0;
+
+    function send(message) { window.parent.postMessage(Object.assign({ jsonrpc: "2.0" }, message), "*"); }
+
+    function request(method, params) {
+      const id = nextId++;
+      send({ id: id, method: method, params: params });
+      return new Promise(function (resolve, reject) { pending.set(id, { resolve: resolve, reject: reject }); });
+    }
+
+    window.addEventListener("message", function (event) {
+      if (event.source !== window.parent) return;
+      const message = event.data;
+      if (!message || message.jsonrpc !== "2.0") return;
+      if (message.method === undefined && pending.has(message.id)) {
+        const waiter = pending.get(message.id);
+        pending.delete(message.id);
+        if (message.error) waiter.reject(new Error(message.error.message || "host error"));
+        else waiter.resolve(message.result);
+      } else if (message.method === "ui/notifications/tool-result") {
+        render(message.params, ++latest);
+      } else if (message.method !== undefined && message.id !== undefined) {
+        // A request from the host (ui/resource-teardown, ...): nothing to clean up.
+        send({ id: message.id, result: {} });
+      }
+    });
+
+    document.getElementById("refresh-btn").addEventListener("click", function () {
+      const seq = ++latest;
+      request("tools/call", { name: "refresh_health", arguments: {} })
+        .then(function (result) { render(result, seq); })
+        .catch(function (err) { if (seq === latest) showError("Refresh failed: " + err.message); });
+    });
+
+    function render(result, seq) {
+      if (seq !== latest) return;
+      const data = parse(result);
+      if (typeof data === "string") { showError(data); return; }
+      const healthy = data.services.filter(function (s) { return s.status === "healthy"; }).length;
+      document.getElementById("summary").textContent =
+        healthy + "/" + data.services.length + " services healthy — updated " + new Date(data.timestamp).toLocaleTimeString();
+      document.getElementById("cards").replaceChildren.apply(document.getElementById("cards"), data.services.map(card));
+    }
+
+    function card(service) {
+      const el = document.createElement("div");
+      el.className = "card " + service.status;
+      const metrics = document.createElement("dl");
+      [["Uptime", service.uptimePct + "%"], ["CPU", service.cpuPct + "%"], ["Memory", service.memoryMb + " MB"], ["Latency", service.responseTimeMs + " ms"]]
+        .forEach(function (pair) { metrics.append(element("dt", pair[0]), element("dd", pair[1])); });
+      el.append(element("h2", service.name), element("p", service.status, "status"), metrics);
+      return el;
+    }
+
+    // structuredContent is untrusted JSON: check it before rendering.
+    function parse(result) {
+      if (!result || result.isError) return "The server reported an error fetching health data.";
+      const data = result.structuredContent;
+      if (!data || !Array.isArray(data.services) || !Number.isFinite(data.timestamp)) return "No health data received.";
+      const valid = data.services.every(function (s) {
+        return s && typeof s.name === "string" && STATUSES.indexOf(s.status) >= 0 &&
+          [s.uptimePct, s.cpuPct, s.memoryMb, s.responseTimeMs].every(Number.isFinite);
+      });
+      return valid ? data : "Received malformed health data.";
+    }
+
+    function showError(message) {
+      document.getElementById("summary").textContent = message;
+      document.getElementById("cards").replaceChildren();
+    }
+
+    function element(tag, text, className) {
+      const el = document.createElement(tag);
+      el.textContent = text;
+      if (className) el.className = className;
+      return el;
+    }
+
+    request("ui/initialize", {
+      appInfo: { name: "Health Dashboard", version: "1.0.0" },
+      appCapabilities: {},
+      protocolVersion: PROTOCOL_VERSION
+    }).then(function () { send({ method: "ui/notifications/initialized", params: {} }); })
+      .catch(function (err) { showError("Could not connect to the host: " + err.message); });
+  })();
+  </script>
+</body>
+</html>

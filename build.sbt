@@ -128,6 +128,21 @@ lazy val tasks = crossProject(JVMPlatform, NativePlatform)
     )
   )
 
+// MCP Apps (io.modelcontextprotocol/ui): metadata and a View resource provider.
+// Pure protocol, so it cross-builds like core.
+lazy val apps = crossProject(JVMPlatform, NativePlatform)
+  .crossType(CrossType.Pure)
+  .in(file("modules/apps"))
+  .dependsOn(core)
+  .settings(
+    name        := "iron-mcp-apps",
+    description := "MCP Apps (io.modelcontextprotocol/ui) for iron-mcp: tools linked to ui:// HTML Views.",
+    libraryDependencies ++= Seq(
+      "org.scalameta" %% "munit"             % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect" % munitCeVersion % Test
+    )
+  )
+
 lazy val auth = (project in file("modules/auth"))
   .dependsOn(core.jvm, http)
   .settings(
@@ -143,7 +158,7 @@ lazy val auth = (project in file("modules/auth"))
   )
 
 lazy val docs = (project in file("modules/docs"))
-  .dependsOn(core.jvm, http, auth, tasks.jvm)
+  .dependsOn(core.jvm, http, auth, tasks.jvm, apps.jvm)
   .settings(
     name := "iron-mcp-docs",
     publish / skip := true,
@@ -191,6 +206,20 @@ lazy val nasa = (project in file("modules/nasa"))
     )
   )
 
+lazy val health = (project in file("modules/health"))
+  .dependsOn(core.jvm, apps.jvm)
+  .settings(
+    name := "iron-mcp-health",
+    Compile / mainClass := Some("ironmcp.health.Main"),
+    publish / skip := true,
+    // The MCP Apps example (Handbook §7.4). Tools are programs over HealthOp.
+    libraryDependencies ++= Seq(
+      "org.typelevel" %% "cats-free"         % "2.13.0",
+      "org.scalameta" %% "munit"             % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect" % munitCeVersion % Test
+    )
+  )
+
 lazy val root = (project in file("."))
-  .aggregate(core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, otel, auth, tasks.jvm, tasks.native)
+  .aggregate(core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, health, otel, auth, tasks.jvm, tasks.native, apps.jvm, apps.native)
   .settings(name := "iron-mcp", publish / skip := true)

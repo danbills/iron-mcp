@@ -312,6 +312,23 @@ default (`403` otherwise, against DNS rebinding), and bodies over 4 MiB are
 refused unread. `McpHttp.routesFor(config)(request => ...)` builds the server per
 request, which is how an access token's claims reach the tools.
 
+### MCP Apps
+
+`iron-mcp-apps` (JVM and Scala Native) links a tool to an HTML View that
+Apps-capable hosts render:
+
+```scala
+McpTool[NoArgs]("get_system_health", "Returns current health status for all services.")(_ => health)
+  .withUi("ui://health/dashboard.html")                     // _meta.ui.resourceUri
+McpTool[NoArgs]("refresh_health", "Fetches latest health data.")(_ => health)
+  .withUi("ui://health/dashboard.html", Visibility.App)     // the View's refresh button only
+
+resources = Some(UiResources.of[IO](UiResource("ui://health/dashboard.html", "Health Dashboard", html)))
+```
+
+`modules/health` ports the handbook's health dashboard, View included. See
+`docs/out/mcp-apps.md`.
+
 ### A client
 
 ```scala
