@@ -4,7 +4,7 @@
 
 iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-built to the JVM and Scala Native with no reflection. The wire types also build for Scala.js, for MCP Apps Views.
 
-- `modules/protocol/src/main/` — `iron-mcp-protocol`, cross-built (`protocolJVM` / `protocolNative` / `protocolJS`), circe and Iron only
+- `modules/protocol/src/main/` — `iron-mcp-protocol`, cross-built (`protocolJVM` / `protocolNative` / `protocolJS`), circe and Iron only; also `ToolOutput`, shared by server tools and View tools (core re-exports it as `ironmcp.server.ToolOutput`)
   - `protocol/` — spec types: `JsonRpc.scala`, `Meta.scala`, one file per capability, `Refined.scala` (Iron aliases from the spec)
   - `schema/` — compile-time macro deriving JSON Schema from Iron types (`SchemaSuite`, `SumSchemaSuite` run on all three platforms)
 - `modules/core/src/main/` — library source (`coreJVM` / `coreNative`), depends on `protocol`
@@ -12,12 +12,12 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
   - `server/Interaction.scala` — `McpTool.interactive` support: `ToolContext`, `Elicit`, `RequestStateCodec` (HMAC-sealed `requestState`; `HmacSha256.scala` is plain Scala because Scala Native has no `javax.crypto`)
   - `transport/` — `Wire.scala`, `Stdio.scala`
   - `client/` — `McpClient.scala` (typed calls, `callToolGathering`, `InputHandlers`), `ClientTransport.scala` (`inProcess`, `lines`), `StdioClient.scala` (child processes), `McpClientError.scala`
-- `modules/http/` — `iron-mcp-http`, JVM-only: `McpHttp` (server), `McpHttpClient` (client), `McpHeaders` (the mirrored headers and their base64 rule)
+- `modules/http/` — `iron-mcp-http`, JVM-only: `McpHttp` (server; opt-in CORS for browser hosts with `Config(cors = true)`), `McpHttpClient` (client), `McpHeaders` (the mirrored headers and their base64 rule)
 - `modules/otel/` — `iron-mcp-otel`, JVM-only opt-in module: OpenTelemetry instrumentation (`OtelServer`, `OtelHttp`, `OtelStdio`, `OtelClient`, `McpTelemetry`, `TraceContext`, `ErrorLadder`, `CostHistogram`) adhering to MCP GenAI semantic conventions, Section 10.2 error ladder and cost histograms
 - `modules/auth/` — `iron-mcp-auth`, JVM-only opt-in module: OAuth 2.1 & Step-Up authorization (RFC 9728 protected resource metadata, RFC 8707 audience binding, per-tool scope enforcement with 403 challenges, `ScopedTools` (`tools/list` filtered by scope), `OAuthClient` (RFC 9728 → RFC 8414 discovery with an AS allowlist, PKCE S256, refresh; `authorizer` plugs into `StepUpClient`), `StepUpClient` with Scope-Union Rule, reflection-free RS256/HS256 `Jwt`, and Keycloak coordination)
 - `modules/tasks/` — `iron-mcp-tasks`, cross-built (`tasksJVM` / `tasksNative`): Tasks extension (`io.modelcontextprotocol/tasks`, SEP-2663, Handbook §7.3) with `TaskStore`, `TaskServer` background fiber management and cooperative cancellation, and `TasksClient` with transparent polling (`callToolWithPolling`)
-- `modules/apps/` — `iron-mcp-apps`, cross-built (`appsJVM` / `appsNative`): MCP Apps (`io.modelcontextprotocol/ui`, Handbook §7.4): `McpApps` (extension id, `text/html;profile=mcp-app`, `clientSupports`), `withUi` on `McpTool` (`_meta.ui.resourceUri`, `Visibility`), `UiResources` serving `ui://` Views, and `UiHtml.inlineScript` (a linked View script inlined into its page)
-- `modules/apps-view/` — `iron-mcp-apps-view`, Scala.js only (`appsView`): the View side of MCP Apps (ext-apps protocol `2026-01-26`, JSON-RPC over `postMessage` with the host). `McpAppView` (handshake, `events` stream, `hostContext` signal, server tools through the host), `HostPort` (`windowParent`, `inMemory` for tests), `HostTheming`, `AutoResize`; cats-effect and fs2, polymorphic in `F`
+- `modules/apps/` — `iron-mcp-apps`, cross-built (`appsJVM` / `appsNative`): MCP Apps (`io.modelcontextprotocol/ui`, Handbook §7.4): `McpApps` (extension id, `text/html;profile=mcp-app`, `clientSupports`), `withUi` / `withVisibility` on `McpTool` (`_meta.ui.resourceUri`, `Visibility`), `UiResources` serving `ui://` Views with their `_meta.ui` (`UiCsp`, `UiPermissions`), and `UiHtml.inlineScript` / `inlineStyle` (a bundled View inlined into its page)
+- `modules/apps-view/` — `iron-mcp-apps-view`, Scala.js only (`appsView`): the View side of MCP Apps (ext-apps protocol `2026-01-26`, JSON-RPC over `postMessage` with the host). `McpAppView` (handshake, `events` stream, `hostContext` signal, server tools and resources through the host, sampling, cancellation both ways), `ViewTool` / `ViewTools` (tools the View offers the host: `tools/list`, `tools/call`, `list_changed`), `HostPort` (`windowParent`, `inMemory` for tests), `HostTheming`, `SafeArea`, `AutoResize` (measures as ext-apps' `App`); cats-effect and fs2, polymorphic in `F`
 - `modules/docs/` — mdoc documentation runner verifying markdown guides against compiled modules
 - `modules/core/src/test/` — munit test suites
 - `modules/demo/` — runnable stdio demo server

@@ -55,7 +55,11 @@ val thermo = McpServer[IO](
 )
 ```
 
-The default sandbox gives a View no network access. Inline its scripts and styles, or list the origins it needs in `UiCsp`.
+The default sandbox gives a View no network access. Inline its scripts and styles, or list the origins it needs in `UiCsp`. A View that needs a browser feature asks for it with `UiPermissions` (`UiPermissions.microphone ++ UiPermissions.clipboardWrite`); the host decides.
+
+A tool that only Views call, with no View of its own (a View polling for fresh data), takes `withVisibility(Visibility.App)`. `ResourceProvider.all(UiResources.of(...), others)` serves Views next to a server's other resources.
+
+A host page in a browser, such as ext-apps' basic-host, calls the server from another origin: serve it with `McpHttp.Config(cors = true)`, which answers CORS for the origins `allowOrigin` accepts.
 
 ## The View side, in Scala.js
 
@@ -91,10 +95,25 @@ object ThermoView extends IOApp.Simple:
 
 - `McpAppView.inWindow` does the handshake (`ui/initialize`, then `ui/notifications/initialized`) before it yields. `hostInfo`, `hostCapabilities` and `hostContext` (a `Signal`, kept current by `host-context-changed`) come from it.
 - `events` is the tool call's input (and partial input while it streams), result and cancellation, buffered from before the handshake so the View cannot miss the result.
-- The View can also call `readServerResource`, `openLink`, `downloadFile`, `sendMessage` (into the conversation, as the user), `updateModelContext`, `requestDisplayMode`, `requestTeardown` and `log`. A host's JSON-RPC error raises `McpAppViewError`.
+- The View can also call `readServerResource`, `listServerResources`, `openLink`, `downloadFile`, `sendMessage` (into the conversation, as the user), `updateModelContext`, `requestDisplayMode`, `createSamplingMessage` (when `hostCapabilities.sampling` says so), `requestTeardown` and `log`. A host's JSON-RPC error raises `McpAppViewError`, and a request the View gives up on (`.timeout`, a cancelled fiber) is cancelled at the host with `notifications/cancelled`.
+- `AutoResize` measures as ext-apps' `App` does, so a host sizes a Scala.js View as it sizes a TypeScript one. `SafeArea.follow` pads the page by the host's `safeAreaInsets`.
 - Pass `onTeardown` to save state before the host's `ui/resource-teardown` is answered.
 - `structuredContent` is untrusted input. `structuredAs[A]` decodes it, and decoding is the validation: render only what decodes, and write values with `textContent`, never `innerHTML`.
 - `HostPort.inMemory` tests a View without a browser: the test plays the host.
+
+A View can offer tools of its own, as ext-apps' `registerTool`: the host lists them (`tools/list`) and calls them (`tools/call`), usually for the model, to read or drive what the View shows. They are built like server tools, from the argument type:
+
+```scala
+final case class SetAllocation(categoryId: String, percent: Double) derives Decoder, JsonSchemaOf
+
+ViewTools.of[IO](
+  ViewTool[SetAllocation]("set-allocation", "Sets one category's share of the budget.")(args =>
+    setAllocation(args.categoryId, args.percent).as(s"${args.categoryId} is now ${args.percent}%")
+  )
+).toResource.flatMap(tools => McpAppView.inWindow[IO](appInfo, tools = Some(tools)))
+```
+
+Passing `tools` declares `tools.listChanged`; `add`, `remove`, `enable` and `disable` on `ViewTools` tell the host as they happen. An unknown or disabled tool is `-32602`; a failing one is an `isError` result.
 
 Share the types the View renders with the server: put `Reading` in a JVM and JS `crossProject` that depends on `iron-mcp-protocol`, with `derives Codec.AsObject, JsonSchemaOf`. Then the server's output schema, its encoder and the View's decoder are one definition.
 
