@@ -326,7 +326,10 @@ McpTool[NoArgs]("refresh_health", "Fetches latest health data.")(_ => health)
 resources = Some(UiResources.of[IO](UiResource("ui://health/dashboard.html", "Health Dashboard", html)))
 ```
 
-`modules/health` ports the handbook's health dashboard, View included. See
+The View itself can be Scala.js: `iron-mcp-apps-view` is the View's side of
+the protocol (`McpAppView`: the handshake with the host, the tool's result as
+an fs2 stream, server tools called through the host), on cats-effect and the
+same wire types as the server, from `iron-mcp-protocol`. See
 `docs/out/mcp-apps.md`.
 
 ### A client

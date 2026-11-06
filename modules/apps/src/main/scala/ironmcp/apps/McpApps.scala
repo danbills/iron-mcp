@@ -80,11 +80,34 @@ final case class UiCsp(
     baseUriDomains: Option[List[String]] = None
 ) derives Codec.AsObject
 
+/** Browser features a View asks the host to grant its iframe (the iframe's
+  * `allow` attribute). Each present field is a request; the host decides.
+  */
+final case class UiPermissions(
+    camera: Option[JsonObject] = None,
+    microphone: Option[JsonObject] = None,
+    geolocation: Option[JsonObject] = None,
+    clipboardWrite: Option[JsonObject] = None
+) derives Codec.AsObject
+
+object UiPermissions:
+  private val requested = Some(JsonObject.empty)
+  val camera: UiPermissions         = UiPermissions(camera = requested)
+  val microphone: UiPermissions     = UiPermissions(microphone = requested)
+  val geolocation: UiPermissions    = UiPermissions(geolocation = requested)
+  val clipboardWrite: UiPermissions = UiPermissions(clipboardWrite = requested)
+
+  extension (a: UiPermissions)
+    /** Both sets of requests: `UiPermissions.microphone ++ UiPermissions.clipboardWrite`. */
+    def ++(b: UiPermissions): UiPermissions =
+      UiPermissions(a.camera.orElse(b.camera), a.microphone.orElse(b.microphone), a.geolocation.orElse(b.geolocation), a.clipboardWrite.orElse(b.clipboardWrite))
+
 /** `_meta.ui` on a View resource. `domain` is host-specific: see the host's
   * documentation before setting it.
   */
 final case class UiResourceMeta(
     csp: Option[UiCsp] = None,
+    permissions: Option[UiPermissions] = None,
     domain: Option[String] = None,
     prefersBorder: Option[Boolean] = None
 ) derives Codec.AsObject
@@ -99,4 +122,12 @@ extension [F[_]](tool: McpTool[F])
       McpApps.UiKey                -> ui.asJson.deepDropNullValues,
       McpApps.LegacyResourceUriKey -> Json.fromString(resourceUri)
     )
+    tool.copy(definition = tool.definition.copy(_meta = Some(meta)))
+
+  /** Who may call the tool, for a tool with no View of its own: often
+    * `Visibility.App`, a tool only Views call (a View polling its server).
+    */
+  def withVisibility(visibility: Visibility, more: Visibility*): McpTool[F] =
+    val ui   = UiToolMeta(visibility = Some((visibility +: more).toList.distinct))
+    val meta = tool.definition._meta.getOrElse(MetaObject.empty) ++ Map(McpApps.UiKey -> ui.asJson.deepDropNullValues)
     tool.copy(definition = tool.definition.copy(_meta = Some(meta)))

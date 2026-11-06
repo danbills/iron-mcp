@@ -1,7 +1,8 @@
 package ironmcp
 package server
 
-import cats.Applicative
+import cats.{Applicative, MonadThrow}
+import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import ironmcp.protocol.*
 
@@ -29,6 +30,40 @@ trait ResourceProvider[F[_]](using F: Applicative[F]):
   def read(params: ReadResourceParams): F[ReadResourceResult | InputRequiredResult]
   def templates(@annotation.unused params: ListResourcesParams): F[ListResourceTemplatesResult] =
     F.pure(ListResourceTemplatesResult(Nil, 0L, CacheScope.`private`))
+
+object ResourceProvider:
+
+  /** Several providers as one: their resources and templates listed together,
+    * and a read tried on each in turn until one knows the URI (any answer but
+    * `-32002`). A result is cached as briefly, and as privately, as the
+    * strictest of its parts. Lists are not paginated across providers.
+    */
+  def all[F[_]](first: ResourceProvider[F], rest: ResourceProvider[F]*)(using F: MonadThrow[F]): ResourceProvider[F] =
+    val providers = first :: rest.toList
+    new ResourceProvider[F]:
+      def list(params: ListResourcesParams): F[ListResourcesResult] =
+        providers.traverse(_.list(params)).map(results =>
+          ListResourcesResult(results.flatMap(_.resources), shortest(results.map(_.ttlMs)), strictest(results.map(_.cacheScope)))
+        )
+
+      override def templates(params: ListResourcesParams): F[ListResourceTemplatesResult] =
+        providers.traverse(_.templates(params)).map(results =>
+          ListResourceTemplatesResult(
+            results.flatMap(_.resourceTemplates),
+            shortest(results.map(_.ttlMs)),
+            strictest(results.map(_.cacheScope))
+          )
+        )
+
+      def read(params: ReadResourceParams): F[ReadResourceResult | InputRequiredResult] =
+        providers.tail.foldLeft(providers.head.read(params)) { (attempt, next) =>
+          attempt.recoverWith { case McpException(error) if error.code == ErrorCode.ResourceNotFound => next.read(params) }
+        }
+
+  private def shortest(ttls: List[CacheTtlMs]): CacheTtlMs = ttls.minBy(t => t: Long)
+
+  private def strictest(scopes: List[CacheScope]): CacheScope =
+    if scopes.contains(CacheScope.`private`) then CacheScope.`private` else CacheScope.`public`
 
 trait PromptProvider[F[_]]:
   def list(params: ListPromptsParams): F[ListPromptsResult]

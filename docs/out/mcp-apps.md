@@ -1,11 +1,15 @@
 # MCP Apps with iron-mcp
 
-Companion to **Chapter 7, §7.4 of the *MCP Engineering Handbook*** ("Building Your First MCP App"), and a port of its `chapter07/health-dashboard` sample (`modules/health`).
+Companion to **Chapter 7, §7.4 of the *MCP Engineering Handbook*** ("Building Your First MCP App").
 
-An MCP App is a tool linked to an HTML **View**. An Apps-capable host renders the View next to the conversation and hands it the tool's result. The View can then call the server's tools through the host. `iron-mcp-apps` is the extension (`io.modelcontextprotocol/ui`). It is pure protocol, so it cross-builds to the JVM and Scala Native like core.
+An MCP App is a tool linked to an HTML **View**. An Apps-capable host renders the View next to the conversation and hands it the tool's result. The View can then call the server's tools through the host. There are two halves:
+
+- `iron-mcp-apps`, the server side of the extension (`io.modelcontextprotocol/ui`): tools linked to Views, and the Views served as resources. It is pure protocol, so it cross-builds to the JVM and Scala Native like core.
+- `iron-mcp-apps-view`, the View side, in Scala.js: the View's connection to its host.
 
 ```scala
-libraryDependencies += "io.github.danbills" %% "iron-mcp-apps" % "<version>"
+libraryDependencies += "io.github.danbills" %% "iron-mcp-apps" % "<version>"       // the server
+libraryDependencies += "io.github.danbills" %% "iron-mcp-apps-view" % "<version>"  // the View (a Scala.js project)
 ```
 
 ## Linking a tool to a View
@@ -51,18 +55,107 @@ val thermo = McpServer[IO](
 )
 ```
 
-The default sandbox gives a View no network access. Inline its scripts and styles, or list the origins it needs in `UiCsp`.
+The default sandbox gives a View no network access. Inline its scripts and styles, or list the origins it needs in `UiCsp`. A View that needs a browser feature asks for it with `UiPermissions` (`UiPermissions.microphone ++ UiPermissions.clipboardWrite`); the host decides.
 
-## The View side
+A tool that only Views call, with no View of its own (a View polling for fresh data), takes `withVisibility(Visibility.App)`. `ResourceProvider.all(UiResources.of(...), others)` serves Views next to a server's other resources.
 
-ext-apps' `App` class is a TypeScript library, but the protocol underneath is small: JSON-RPC 2.0 over `window.parent.postMessage`. The health dashboard's View (`modules/health/src/main/resources/ironmcp/health/dashboard.html`) speaks it directly, with no bundle:
+A host page in a browser, such as ext-apps' basic-host, calls the server from another origin: serve it with `McpHttp.Config(cors = true)`, which answers CORS for the origins `allowOrigin` accepts.
+
+## The View side, in Scala.js
+
+A View never talks to the MCP server. It talks to the host, in JSON-RPC 2.0 over `window.parent.postMessage` (ext-apps' protocol `2026-01-26`), and the host relays what needs relaying. `McpAppView` is that connection, on cats-effect and fs2, with the server's own types from `iron-mcp-protocol` (`CallToolResult`, `ContentBlock`, `Implementation`):
+
+```scala
+import cats.effect.{IO, IOApp}
+import io.github.iltotore.iron.autoRefine
+import ironmcp.apps.view.*
+import ironmcp.protocol.Implementation
+
+object ThermoView extends IOApp.Simple:
+  def run: IO[Unit] =
+    val views = for
+      view <- McpAppView.inWindow[IO](Implementation(name = "Thermometer", version = "1.0.0"))
+      _    <- HostTheming.follow(view)   // the host's theme, CSS variables and fonts, kept current
+      _    <- AutoResize(view)           // ui/notifications/size-changed as the content grows
+    yield view
+    views.use { view =>
+      view.events
+        .evalMap {
+          case HostEvent.ToolResult(result) => render(result.structuredAs[Reading])
+          case _                            => IO.unit
+        }
+        .compile
+        .drain
+    }
+
+  // The refresh button: an app-only tool, called through the host.
+  def refresh(view: McpAppView[IO]): IO[Unit] =
+    view.callServerTool("refresh_temperature").flatMap(result => render(result.structuredAs[Reading]))
+```
+
+- `McpAppView.inWindow` does the handshake (`ui/initialize`, then `ui/notifications/initialized`) before it yields. `hostInfo`, `hostCapabilities` and `hostContext` (a `Signal`, kept current by `host-context-changed`) come from it.
+- `events` is the tool call's input (and partial input while it streams), result and cancellation, buffered from before the handshake so the View cannot miss the result.
+- The View can also call `readServerResource`, `listServerResources`, `openLink`, `downloadFile`, `sendMessage` (into the conversation, as the user), `updateModelContext`, `requestDisplayMode`, `createSamplingMessage` (when `hostCapabilities.sampling` says so), `requestTeardown` and `log`. A host's JSON-RPC error raises `McpAppViewError`, and a request the View gives up on (`.timeout`, a cancelled fiber) is cancelled at the host with `notifications/cancelled`.
+- `AutoResize` measures as ext-apps' `App` does, so a host sizes a Scala.js View as it sizes a TypeScript one. `SafeArea.follow` pads the page by the host's `safeAreaInsets`.
+- Pass `onTeardown` to save state before the host's `ui/resource-teardown` is answered.
+- `structuredContent` is untrusted input. `structuredAs[A]` decodes it, and decoding is the validation: render only what decodes, and write values with `textContent`, never `innerHTML`.
+- `HostPort.inMemory` tests a View without a browser: the test plays the host.
+
+A View can offer tools of its own, as ext-apps' `registerTool`: the host lists them (`tools/list`) and calls them (`tools/call`), usually for the model, to read or drive what the View shows. They are built like server tools, from the argument type:
+
+```scala
+final case class SetAllocation(categoryId: String, percent: Double) derives Decoder, JsonSchemaOf
+
+ViewTools.of[IO](
+  ViewTool[SetAllocation]("set-allocation", "Sets one category's share of the budget.")(args =>
+    setAllocation(args.categoryId, args.percent).as(s"${args.categoryId} is now ${args.percent}%")
+  )
+).toResource.flatMap(tools => McpAppView.inWindow[IO](appInfo, tools = Some(tools)))
+```
+
+Passing `tools` declares `tools.listChanged`; `add`, `remove`, `enable` and `disable` on `ViewTools` tell the host as they happen. An unknown or disabled tool is `-32602`; a failing one is an `isError` result.
+
+Share the types the View renders with the server: put `Reading` in a JVM and JS `crossProject` that depends on `iron-mcp-protocol`, with `derives Codec.AsObject, JsonSchemaOf`. Then the server's output schema, its encoder and the View's decoder are one definition.
+
+### Packaging the View
+
+The default sandbox loads nothing from the network, so the View ships as one HTML document with the linked JS inline. Let sbt put the linked script among the server's resources, and build the page when the server starts, with `UiHtml.inlineScript` (from `iron-mcp-apps`):
+
+```scala
+// build.sbt
+lazy val view = project
+  .enablePlugins(ScalaJSPlugin)
+  .settings(scalaJSUseMainModuleInitializer := true)
+
+lazy val server = project.settings(
+  Compile / resourceGenerators += Def.task {
+    Def.uncached {   // sbt 2: a task returning files is not cached
+      val _      = (view / Compile / fullLinkJS).value
+      val linked = (view / Compile / fullLinkJS / scalaJSLinkerOutputDirectory).value / "main.js"
+      val out    = (Compile / resourceManaged).value / "thermo" / "view.js"
+      IO.copyFile(linked, out)
+      Seq(out)
+    }
+  }.taskValue
+)
+```
+
+```scala
+// the server: a template with <!-- mcp-app-script --> where the script goes
+val html = UiHtml.inlineScript(resource("thermo/view.html"), resource("thermo/view.js"))
+UiResources.of[IO](UiResource(view, "Thermometer", html))
+```
+
+The linked script is large: about 3 MB for a View on cats-effect, fs2 and circe, unminified under sbt 2 (danbills/iron-mcp#1).
+
+### Without Scala.js
+
+The protocol underneath is small, so a hand-written View works too:
 
 1. Send `ui/initialize` (`appInfo`, `appCapabilities`, `protocolVersion`) and wait for the host's reply.
 2. Send `ui/notifications/initialized`.
 3. Render each `ui/notifications/tool-result`, which carries a `CallToolResult`.
-4. Call server tools with `tools/call` through the host. The refresh button calls `refresh_health` this way.
-
-Treat `structuredContent` as untrusted input in the View: check its shape before rendering, and write values with `textContent`, never `innerHTML`.
+4. Call server tools with `tools/call` through the host.
 
 ## App-only is a host convention, not access control
 
@@ -72,10 +165,6 @@ Treat `structuredContent` as untrusted input in the View: check its shape before
 
 `McpApps.clientSupports(ctx.clientCapabilities)` tells you whether the request's client declared `io.modelcontextprotocol/ui` with the `mcp-app` media type. Use it to decide whether a tool's text block should carry everything, or can leave the details to the View. To announce Apps support in `server/discover`, pass `extensions = Some(Map(McpApps.serverExtension))` to `McpServer`. Hosts don't require it: they look for `_meta.ui` on the tools.
 
-## Running the example
+## Seeing it
 
-```bash
-sbt health/run   # stdio server: get_system_health, refresh_health, ui://health/dashboard.html
-```
-
-A plain MCP client sees two ordinary tools and one resource. To see the dashboard, connect the server to an Apps-capable host, or use the example host in the ext-apps repository (`examples/basic-host`).
+A plain MCP client sees ordinary tools and resources. To see a View, connect the server to an Apps-capable host, or use the example host in the ext-apps repository (`examples/basic-host`).
