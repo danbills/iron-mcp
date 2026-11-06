@@ -1,7 +1,7 @@
 package ironmcp
 package server
 
-import cats.{Applicative, ApplicativeThrow}
+import cats.ApplicativeThrow
 import cats.syntax.all.*
 import io.circe.{Decoder, Json, JsonObject}
 import io.github.iltotore.iron.autoRefine
@@ -198,8 +198,10 @@ object McpTool:
       .left
       .map(failure => CallToolResult.failed(failure.message))
 
-/** A [[ToolProvider]] over a fixed set of typed tools. */
-final class ToolSet[F[_]](tools: List[McpTool[F]], ttlMs: CacheTtlMs = 60000L)(using F: Applicative[F])
+/** A [[ToolProvider]] over a fixed set of typed tools. Calling a name it does
+  * not have raises [[McpException.unknownTool]] (`-32602`).
+  */
+final class ToolSet[F[_]](tools: List[McpTool[F]], ttlMs: CacheTtlMs = 60000L)(using F: ApplicativeThrow[F])
     extends ToolProvider[F]:
 
   private val byName: Map[String, McpTool[F]] =
@@ -214,7 +216,7 @@ final class ToolSet[F[_]](tools: List[McpTool[F]], ttlMs: CacheTtlMs = 60000L)(u
   override def callEmitting(params: CallToolParams, emit: Emit[F]): F[CallToolResult | InputRequiredResult] =
     byName.get(params.name) match
       case Some(tool) => tool.run(params, emit)
-      case None       => F.pure(CallToolResult.failed(s"no such tool: ${params.name}"))
+      case None       => F.raiseError(McpException.unknownTool(params.name))
 
 object ToolSet:
-  def of[F[_]: Applicative](tools: McpTool[F]*): ToolSet[F] = ToolSet(tools.toList)
+  def of[F[_]: ApplicativeThrow](tools: McpTool[F]*): ToolSet[F] = ToolSet(tools.toList)

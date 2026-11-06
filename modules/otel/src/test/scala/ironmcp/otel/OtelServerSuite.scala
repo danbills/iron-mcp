@@ -152,8 +152,8 @@ class OtelServerSuite extends CatsEffectSuite:
         spans = spanExporter.getFinishedSpanItems.asScala.toList
         _ = assertEquals(spans.size, 1)
         span = spans.head
-        // ToolSet returns an isError failure for unknown tool
-        _ = assertEquals(span.getAttributes.get(JAttributeKey.stringKey("mcp.error_rung")), "tool_error")
+        // An unknown tool is a -32602 protocol error, so the call never reached a tool
+        _ = assertEquals(span.getAttributes.get(JAttributeKey.stringKey("mcp.error_rung")), "protocol")
         metrics = metricReader.collectAllMetrics().asScala.toList
         toolCalls = findMetric(metrics, McpSemantics.Metrics.ToolCalls)
         _ = assert(toolCalls.isDefined)

@@ -222,6 +222,12 @@ final class McpServer[F[_]](
 final case class McpException(error: JsonRpcError) extends RuntimeException(error.message: String)
 
 object McpException:
+  /** An unknown tool is the caller's mistake about the server, not a tool that
+    * ran and failed, so it is a protocol error (`-32602`), as the spec says.
+    */
+  def unknownTool(name: String): McpException =
+    McpException(JsonRpcError(ErrorCode.InvalidParams, s"Unknown tool: $name".assumeNonEmpty))
+
   def resourceNotFound(uri: String): McpException =
     McpException(JsonRpcError(ErrorCode.ResourceNotFound, "resource not found", Some(io.circe.Json.obj("uri" -> io.circe.Json.fromString(uri)))))
 
