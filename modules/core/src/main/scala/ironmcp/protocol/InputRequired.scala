@@ -2,7 +2,6 @@ package ironmcp
 package protocol
 
 import io.circe.*
-import io.github.iltotore.iron.circe.given
 
 /** A server saying "I cannot answer until the client does something for me" —
   * sampling, elicitation, or a roots listing.

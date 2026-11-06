@@ -2,8 +2,6 @@ package ironmcp
 package protocol
 
 import io.circe.*
-import io.circe.syntax.*
-import io.github.iltotore.iron.circe.given
 
 final case class ToolsCapability(listChanged: Option[Boolean] = None) derives Codec.AsObject
 final case class PromptsCapability(listChanged: Option[Boolean] = None) derives Codec.AsObject

@@ -5,6 +5,7 @@ val ironVersion       = "3.3.2"
 val circeVersion      = "0.14.16"
 val catsEffectVersion = "3.7.0"
 val http4sVersion     = "0.23.37"
+val otel4sVersion     = "1.1.0"
 val munitVersion      = "1.3.5"
 val munitCeVersion    = "2.2.0"
 
@@ -50,7 +51,8 @@ ThisBuild / scalacOptions ++= Seq(
   "-feature",
   "-unchecked",
   "-Wunused:all",
-  "-Wvalue-discard"
+  "-Wvalue-discard",
+  "-Werror"
 )
 
 // No reflection anywhere in this build: every codec is derived at compile time
@@ -75,6 +77,9 @@ lazy val core = crossProject(JVMPlatform, NativePlatform)
     )
   )
 
+lazy val mcpbTools = settingKey[Seq[Mcpb.Tool]]("The tools an MCP Bundle's manifest lists; checked against the linked server")
+lazy val mcpb      = taskKey[File]("Links the server and packs it as an MCP Bundle (.mcpb, manifest 0.3)")
+
 lazy val demo = crossProject(JVMPlatform, NativePlatform)
   .crossType(CrossType.Pure)
   .in(file("modules/demo"))
@@ -83,6 +88,115 @@ lazy val demo = crossProject(JVMPlatform, NativePlatform)
     name := "iron-mcp-demo",
     Compile / mainClass := Some("ironmcp.demo.Main"),
     publish / skip := true
+  )
+  .nativeSettings(
+    // `demoNative/mcpb`: the native binary as a one-file MCP Bundle (Handbook §5.5).
+    mcpbTools := Seq(
+      Mcpb.Tool("greet", "Greet someone, one to ten times."),
+      Mcpb.Tool("long_operation", "Simulates work for a few seconds, reporting progress each second.")
+    ),
+    mcpb := Def.uncached {
+      val binary = fileConverter.value.toPath((Compile / nativeLink).value)
+      val manifest = Mcpb.Manifest(
+        name = "iron-mcp-demo",
+        displayName = "iron-mcp demo",
+        version = version.value,
+        description = "The iron-mcp demo server: typed tools with schemas derived from Iron refinement types.",
+        author = "Dan Billings",
+        license = "MIT",
+        homepage = homepage.value.map(_.toString),
+        binaryName = "iron-mcp-demo",
+        tools = mcpbTools.value
+      )
+      val out = target.value / s"iron-mcp-demo-${Mcpb.semver(version.value)}.mcpb"
+      Mcpb.pack(manifest, binary, target.value / "mcpb", out)
+      streams.value.log.info(s"MCP Bundle: $out")
+      out
+    }
+  )
+
+// Streamable HTTP. JVM-only: http4s ember does not run on Scala Native.
+lazy val http = (project in file("modules/http"))
+  .dependsOn(core.jvm)
+  .settings(
+    name        := "iron-mcp-http",
+    description := "Streamable HTTP (revision 2026-07-28, stateless) for iron-mcp, server and client, on http4s ember.",
+    libraryDependencies ++= Seq(
+      "org.http4s"    %% "http4s-ember-server" % http4sVersion,
+      "org.http4s"    %% "http4s-ember-client" % http4sVersion,
+      "org.scalameta" %% "munit"               % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
+    )
+  )
+
+lazy val otel = (project in file("modules/otel"))
+  .dependsOn(core.jvm, http)
+  .settings(
+    name        := "iron-mcp-otel",
+    description := "OpenTelemetry instrumentation for iron-mcp, adhering to MCP GenAI semantic conventions, with W3C trace propagation, error ladder metrics, and cost histograms.",
+    libraryDependencies ++= Seq(
+      "org.typelevel"    %% "otel4s-core"               % otel4sVersion,
+      "org.typelevel"    %% "otel4s-oteljava"           % otel4sVersion,
+      "io.opentelemetry" %  "opentelemetry-sdk-testing" % "1.64.0"       % Test,
+      "org.scalameta"    %% "munit"                     % munitVersion   % Test,
+      "org.typelevel"    %% "munit-cats-effect"         % munitCeVersion % Test
+    )
+  )
+
+lazy val tasks = crossProject(JVMPlatform, NativePlatform)
+  .crossType(CrossType.Pure)
+  .in(file("modules/tasks"))
+  .dependsOn(core)
+  .settings(
+    name        := "iron-mcp-tasks",
+    description := "The Tasks extension (io.modelcontextprotocol/tasks, SEP-2663) for iron-mcp, client and server.",
+    libraryDependencies ++= Seq(
+      "org.scalameta" %% "munit"             % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect" % munitCeVersion % Test
+    )
+  )
+
+// MCP Apps (io.modelcontextprotocol/ui): metadata and a View resource provider.
+// Pure protocol, so it cross-builds like core.
+lazy val apps = crossProject(JVMPlatform, NativePlatform)
+  .crossType(CrossType.Pure)
+  .in(file("modules/apps"))
+  .dependsOn(core)
+  .settings(
+    name        := "iron-mcp-apps",
+    description := "MCP Apps (io.modelcontextprotocol/ui) for iron-mcp: tools linked to ui:// HTML Views.",
+    libraryDependencies ++= Seq(
+      "org.scalameta" %% "munit"             % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect" % munitCeVersion % Test
+    )
+  )
+
+lazy val auth = (project in file("modules/auth"))
+  .dependsOn(core.jvm, http)
+  .settings(
+    name        := "iron-mcp-auth",
+    description := "OAuth 2.1 and Step-Up authorization for iron-mcp (RFC 9728, RFC 8707, RFC 6750, SEP-2350) with Keycloak coordination.",
+    libraryDependencies ++= Seq(
+      "org.http4s"    %% "http4s-ember-server" % http4sVersion,
+      "org.http4s"    %% "http4s-ember-client" % http4sVersion,
+      "org.http4s"    %% "http4s-circe"        % http4sVersion,
+      "org.http4s"    %% "http4s-dsl"          % http4sVersion  % Test,  // the fake authorization server
+      "org.scalameta" %% "munit"               % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
+    )
+  )
+
+lazy val docs = (project in file("modules/docs"))
+  .dependsOn(core.jvm, http, auth, tasks.jvm, apps.jvm)
+  .settings(
+    name := "iron-mcp-docs",
+    publish / skip := true,
+    fork := true,
+    libraryDependencies ++= Seq(
+      "org.scalameta"  %% "mdoc"            % "2.9.2",
+      "org.scala-lang" %% "scala3-compiler" % scala3Version
+    ),
+    dependencyOverrides += "org.scala-lang" %% "scala3-compiler" % scala3Version
   )
 
 lazy val weather = (project in file("modules/weather"))
@@ -121,6 +235,20 @@ lazy val nasa = (project in file("modules/nasa"))
     )
   )
 
+lazy val health = (project in file("modules/health"))
+  .dependsOn(core.jvm, apps.jvm)
+  .settings(
+    name := "iron-mcp-health",
+    Compile / mainClass := Some("ironmcp.health.Main"),
+    publish / skip := true,
+    // The MCP Apps example (Handbook §7.4). Tools are programs over HealthOp.
+    libraryDependencies ++= Seq(
+      "org.typelevel" %% "cats-free"         % "2.13.0",
+      "org.scalameta" %% "munit"             % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect" % munitCeVersion % Test
+    )
+  )
+
 lazy val root = (project in file("."))
-  .aggregate(core.jvm, core.native, demo.jvm, demo.native, weather, nasa)
+  .aggregate(core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, health, otel, auth, tasks.jvm, tasks.native, apps.jvm, apps.native)
   .settings(name := "iron-mcp", publish / skip := true)

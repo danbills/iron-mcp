@@ -1,0 +1,71 @@
+@startuml stepup_union_flow
+autonumber
+skinparam style strictuml
+skinparam sequenceMessageAlign center
+skinparam boxPadding 10
+skinparam participantPadding 15
+
+actor "Client\n(StepUpClient)" as Client
+box "iron-mcp Server (:5302)" #F8F9FA
+    participant "McpAuthServer\n(Resource Server)" as RS
+    participant "ReportTools" as Tools
+end box
+box "Keycloak on danarch (:10000)" #E8F4F8
+    participant "Keycloak AS" as AS
+end box
+
+== Initial State ==
+note over Client
+  requestedScopes = { "mcp:read" }
+  grantedScopes   = { "mcp:read" }
+  heldToken       = token_1 (scope="mcp:read")
+end note
+
+== 1. Invoking Low-Privilege Tool ==
+Client -> RS: POST /mcp (token_1)\nMcp-Method: tools/call\nMcp-Name: read_summary
+RS -> RS: Check scopes: 'read_summary' needs ["mcp:read"] -> OK
+RS -> Tools: execute read_summary()
+Tools --> RS: "Summary: Q2 revenue up 8%."
+RS --> Client: 200 OK -> "Summary: Q2 revenue up 8%."
+
+== 2. Invoking High-Privilege Tool triggers 403 Challenge ==
+Client -> RS: POST /mcp (token_1)\nMcp-Method: tools/call\nMcp-Name: export_full_data
+RS -> RS: Check scopes: 'export_full_data' needs ["mcp:read", "mcp:export"]\nToken grants only ["mcp:read"] -> INSUFFICIENT SCOPE!
+RS --> Client: 403 Forbidden\nWWW-Authenticate: Bearer error="insufficient_scope",\n  scope="mcp:read mcp:export",\n  resource_metadata="http://localhost:5302/.well-known/oauth-protected-resource/mcp"
+
+== 3. Step-Up Authorization via the Scope-Union Rule (§9.7.4) ==
+note over Client #EBF5FB
+  THE UNION RULE:
+  requested_new = requested_previous ∪ challenged
+  requested_new = { "mcp:read" } ∪ { "mcp:read", "mcp:export" }
+                = { "mcp:read", "mcp:export" }
+end note
+
+Client -> AS: POST /token\ngrant_type=client_credentials&scope=mcp:read mcp:export
+AS --> Client: 200 OK\n{\n  "access_token": "token_2",\n  "scope": "mcp:read mcp:export"\n}
+note over Client
+  Check for narrower grant:
+  withheld = requested_new \ granted = {} -> SUCCESS!
+  requestedScopes = { "mcp:read", "mcp:export" }
+  grantedScopes   = { "mcp:read", "mcp:export" }
+  heldToken       = token_2
+end note
+
+== 4. Retry with Union Token ==
+Client -> RS: POST /mcp (token_2)\nMcp-Method: tools/call\nMcp-Name: export_full_data
+RS -> RS: Check scopes: token_2 carries ["mcp:read", "mcp:export"] -> OK
+RS -> Tools: execute export_full_data()
+Tools --> RS: "export.csv: 4,812 rows."
+RS --> Client: 200 OK -> "export.csv: 4,812 rows."
+
+== 5. Verification: Previous Tools Still Function ==
+Client -> RS: POST /mcp (token_2)\nMcp-Method: tools/call\nMcp-Name: read_summary
+RS -> RS: Check scopes: token_2 carries ["mcp:read"] -> OK
+RS -> Tools: execute read_summary()
+Tools --> RS: "Summary: Q2 revenue up 8%."
+RS --> Client: 200 OK -> "Summary: Q2 revenue up 8%."
+note over Client #E8F8F5
+  NOTHING LOST!
+  The union preserved mcp:read across the step-up.
+end note
+@enduml

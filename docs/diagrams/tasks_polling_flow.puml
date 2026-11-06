@@ -1,0 +1,71 @@
+@startuml
+skinparam backgroundColor #FFFFFF
+skinparam sequenceMessageAlign center
+skinparam roundcorner 10
+skinparam ParticipantPadding 20
+skinparam BoxPadding 10
+skinparam sequence {
+    ArrowColor #2C3E50
+    LifeLineBorderColor #7F8C8D
+    LifeLineBackgroundColor #ECF0F1
+    ParticipantBorderColor #34495E
+    ParticipantBackgroundColor #3498DB
+    ParticipantFontColor #FFFFFF
+    ParticipantFontStyle bold
+    ActorBorderColor #2C3E50
+    ActorBackgroundColor #E74C3C
+    ActorFontColor #FFFFFF
+}
+
+actor "User / LLM" as User
+participant "TasksClient\n(Client-side §7.3)" as Client
+participant "TaskServer\n(Server-side §7.3)" as Server
+collections "Background\nFiber" as Fiber
+database "TaskStore\n(In-Memory/Persistent)" as Store
+
+== Phase 1: Task Dispatch & Capability Negotiation ==
+
+User -> Client : callToolWithPolling("generate_report", args)
+note over Client
+  Injects capability into _meta:
+  "io.modelcontextprotocol/tasks": {}
+end note
+
+Client -> Server : tools/call {name: "generate_report", args, _meta}
+Server -> Server : Inspect taskTools set\n& client capability
+Server -> Store : create(taskId, pollIntervalMs=500, ttlMs)
+Server -> Fiber : Concurrent.start(underlying.handle(req))
+Server --> Client : 200 OK (CreateTaskResult)\n{resultType: "task", taskId: "task-9a7f",\nstatus: "working", pollIntervalMs: 500}
+
+== Phase 2: Polling Cadence ==
+
+Client -> Client : sleep(pollIntervalMs = 500ms)
+Client -> Server : tasks/get {taskId: "task-9a7f"}
+Server -> Store : get(taskId)
+Store --> Server : TaskSnapshot(status: working)
+Server --> Client : 200 OK {status: "working", pollIntervalMs: 500}
+
+Fiber -> Fiber : Execution finishes\nproduces CallToolResult
+Fiber -> Store : complete(taskId, callToolResult)
+
+Client -> Client : sleep(pollIntervalMs = 500ms)
+Client -> Server : tasks/get {taskId: "task-9a7f"}
+Server -> Store : get(taskId)
+Store --> Server : TaskSnapshot(status: completed, result: CallToolResult)
+Server --> Client : 200 OK (GetTaskResult)\n{status: "completed", result: {content: [...]}}
+
+Client --> User : CallToolResult(content: [...])\n(Transparent delivery to LLM)
+
+== Phase 3: Cooperative Cancellation (Optional) ==
+
+alt User cancels execution
+    User -> Client : cancelTask("task-9a7f")
+    Client -> Server : tasks/cancel {taskId: "task-9a7f"}
+    Server -> Store : cancel(taskId)
+    Store -> Fiber : fiber.cancel (CancelHook)
+    Store --> Server : CancelTaskResult(status: cancelled)
+    Server --> Client : 200 OK {taskId: "task-9a7f", status: "cancelled"}
+    Client --> User : TaskCancelledException
+end
+
+@enduml

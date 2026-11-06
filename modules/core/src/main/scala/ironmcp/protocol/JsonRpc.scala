@@ -52,6 +52,7 @@ enum ErrorCode(val code: Int):
   case InternalError  extends ErrorCode(-32603)
 
   // MCP, revision 2026-07-28
+  case ResourceNotFound                extends ErrorCode(-32002)
   case HeaderMismatch                  extends ErrorCode(-32020)
   case MissingRequiredClientCapability extends ErrorCode(-32021)
   case UnsupportedProtocolVersion      extends ErrorCode(-32022)
@@ -72,6 +73,7 @@ object ErrorCode:
     MethodNotFound,
     InvalidParams,
     InternalError,
+    ResourceNotFound,
     HeaderMismatch,
     MissingRequiredClientCapability,
     UnsupportedProtocolVersion,

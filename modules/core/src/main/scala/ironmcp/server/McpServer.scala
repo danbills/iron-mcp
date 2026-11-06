@@ -1,7 +1,7 @@
 package ironmcp
 package server
 
-import cats.Applicative
+import cats.{Applicative, ApplicativeThrow}
 import cats.syntax.all.*
 import io.circe.{Decoder, Encoder, Json}
 import io.circe.syntax.*
@@ -26,8 +26,10 @@ final class McpServer[F[_]](
     val prompts: Option[PromptProvider[F]] = None,
     val completions: Option[CompletionProvider[F]] = None,
     val subscriptions: Option[SubscriptionProvider[F]] = None,
-    val discoveryTtlMs: DiscoveryTtlMs = 300000L
-)(using F: Applicative[F]):
+    val discoveryTtlMs: DiscoveryTtlMs = 300000L,
+    val extensions: Option[Map[String, io.circe.JsonObject]] = None,
+    val customHandlers: Map[String, Option[Json] => F[Either[JsonRpcError, Json]]] = Map.empty
+)(using F: Applicative[F]) extends ServerHandler[F]:
 
   /** Capabilities are derived from the providers, never declared separately —
     * a server cannot advertise tools it has no way to serve.
@@ -36,7 +38,8 @@ final class McpServer[F[_]](
     tools = tools.as(ToolsCapability(listChanged = Some(false))),
     resources = resources.as(ResourcesCapability(subscribe = subscriptions.as(true), listChanged = Some(false))),
     prompts = prompts.as(PromptsCapability(listChanged = Some(false))),
-    completions = completions.as(io.circe.JsonObject.empty)
+    completions = completions.as(io.circe.JsonObject.empty),
+    extensions = extensions
   )
 
   private val serverMeta = Some(ResultMeta(serverInfo = Some(info)))
@@ -44,9 +47,12 @@ final class McpServer[F[_]](
   /** Answers one message. `None` means the message was a notification, which by
     * JSON-RPC rule gets no reply.
     */
-  def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] = message match
+  def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] = handleEmitting(message, _ => F.unit)
+
+  /** [[handle]], with notifications the request emits going to `emit`. */
+  override def handleEmitting(message: JsonRpcMessage, emit: NotificationSink[F]): F[Option[JsonRpcMessage]] = message match
     case JsonRpcMessage.Request(id, method, params) =>
-      dispatch(Method.parse(method), params).map {
+      dispatch(Method.parse(method), params, emit).map {
         case Right(result) => Some(JsonRpcMessage.Success(id, result))
         case Left(error)   => Some(JsonRpcMessage.Failure(Some(id), error))
       }
@@ -55,7 +61,28 @@ final class McpServer[F[_]](
     // recipient of a response.
     case JsonRpcMessage.Success(_, _) | JsonRpcMessage.Failure(_, _) => F.pure(None)
 
-  private def dispatch(method: Method, params: Option[Json]): F[Either[JsonRpcError, Json]] =
+  /** [[handle]], for transports: a provider that fails becomes an error
+    * response instead of failing the stream. An [[McpException]] carries the
+    * error to send; anything else is `-32603` without its message, which may
+    * hold internals the client should not see.
+    */
+  def handleRecovering(message: JsonRpcMessage)(using F: ApplicativeThrow[F]): F[Option[JsonRpcMessage]] =
+    handleEmittingRecovering(message, _ => F.unit)
+
+  override def handleEmittingRecovering(message: JsonRpcMessage, emit: NotificationSink[F])(using
+      F: ApplicativeThrow[F]
+  ): F[Option[JsonRpcMessage]] =
+    handleEmitting(message, emit).handleError { error =>
+      val id = message match
+        case JsonRpcMessage.Request(id, _, _) => Some(id)
+        case _                                => None
+      val reply = error match
+        case McpException(rpc) => rpc
+        case _                 => JsonRpcError(ErrorCode.InternalError, "internal error")
+      id.map(requestId => JsonRpcMessage.Failure(Some(requestId), reply))
+    }
+
+  private def dispatch(method: Method, params: Option[Json], emit: NotificationSink[F]): F[Either[JsonRpcError, Json]] =
     method match
       case Method.Discover =>
         withParams[DiscoverParams](params) { request =>
@@ -83,7 +110,7 @@ final class McpServer[F[_]](
       case Method.ToolsCall =>
         served(tools, "tools") { provider =>
           withParams[CallToolParams](params) { request =>
-            guarded(request._meta)(provider.call(request).map(orInput[CallToolResult]))
+            guarded(request._meta)(provider.callEmitting(request, Emit(request._meta, emit)).map(orInput[CallToolResult]))
           }
         }
 
@@ -127,6 +154,9 @@ final class McpServer[F[_]](
             guarded(request._meta)(provider.listen(request).map(_.asJson))
           }
         }
+
+      case Method.Unknown(raw) if customHandlers.contains(raw) =>
+        customHandlers(raw)(params)
 
       case other =>
         F.pure(
@@ -184,6 +214,22 @@ final class McpServer[F[_]](
     checkVersion(meta) match
       case Left(error) => F.pure(Left(error))
       case Right(_)    => run.map(Right(_))
+
+/** Raised by a provider to answer with a specific JSON-RPC error, such as
+  * `-32002` for a resource that does not exist. Tools should not raise it: a
+  * tool's failure is an `isError` result the model can read.
+  */
+final case class McpException(error: JsonRpcError) extends RuntimeException(error.message: String)
+
+object McpException:
+  /** An unknown tool is the caller's mistake about the server, not a tool that
+    * ran and failed, so it is a protocol error (`-32602`), as the spec says.
+    */
+  def unknownTool(name: String): McpException =
+    McpException(JsonRpcError(ErrorCode.InvalidParams, s"Unknown tool: $name".assumeNonEmpty))
+
+  def resourceNotFound(uri: String): McpException =
+    McpException(JsonRpcError(ErrorCode.ResourceNotFound, "resource not found", Some(io.circe.Json.obj("uri" -> io.circe.Json.fromString(uri)))))
 
 extension (self: String)
   private[server] def assumeNonEmpty: NonEmptyString =

@@ -1,0 +1,54 @@
+@startuml naive_antipattern
+autonumber
+skinparam style strictuml
+skinparam sequenceMessageAlign center
+skinparam boxPadding 10
+skinparam participantPadding 15
+
+actor "Client\n(Naive Step-Up)" as Client
+box "iron-mcp Server (:5302)" #F8F9FA
+    participant "McpAuthServer\n(Resource Server)" as RS
+end box
+box "Keycloak on danarch (:10000)" #E8F4F8
+    participant "Keycloak AS\n(Stateless Grants)" as AS
+end box
+
+== Initial State ==
+note over Client
+  heldToken = token_1 (scope="mcp:read")
+end note
+
+Client -> RS: POST /mcp (token_1): tools/call export_full_data
+RS --> Client: 403 Forbidden\nWWW-Authenticate: Bearer error="insufficient_scope",\n  scope="mcp:read mcp:export"
+
+== The Anti-Pattern: Requesting ONLY Missing Scopes ==
+note over Client #FADBD8
+  THE NAIVE MISTAKE:
+  Assumes grants accumulate at the AS.
+  missing = challenged \ granted = { "mcp:export" }
+  Client requests ONLY "mcp:export"!
+end note
+
+Client -> AS: POST /token\nscope=mcp:export
+AS --> Client: 200 OK\n{\n  "access_token": "token_naive",\n  "scope": "mcp:export"\n}
+note over AS
+  The AS is STATELESS:
+  A re-authorization REPLACES the token!
+  "mcp:read" was omitted from the request, so it is GONE!
+end note
+
+== Damage 1: Retry Still Fails ==
+Client -> RS: POST /mcp (token_naive): tools/call export_full_data
+RS -> RS: Check scopes: 'export_full_data' requires ["mcp:read", "mcp:export"]\nToken grants only ["mcp:export"] -> STILL MISSING mcp:read!
+RS --> Client: 403 Forbidden\nWWW-Authenticate: Bearer error="insufficient_scope", scope="mcp:read mcp:export"
+
+== Damage 2: Regression in Previously Working Tool ==
+Client -> RS: POST /mcp (token_naive): tools/call read_summary
+RS -> RS: Check scopes: 'read_summary' requires ["mcp:read"]\nToken grants only ["mcp:export"] -> FAILS!
+RS --> Client: 403 Forbidden\nWWW-Authenticate: Bearer error="insufficient_scope", scope="mcp:read"
+note over Client #FDEDEC
+  PRODUCTION NIGHTMARE:
+  A tool that worked perfectly 5 seconds ago now fails.
+  The regression surfaces far from the code that triggered it.
+end note
+@enduml

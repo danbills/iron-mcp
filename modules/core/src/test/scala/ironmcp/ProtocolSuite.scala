@@ -168,5 +168,3 @@ class ProtocolSuite extends CatsEffectSuite:
     assert(600001L.refineEither[DiscoveryTtlMsC].isLeft, "ten minutes is the ceiling")
     assert(0L.refineEither[DiscoveryTtlMsC].isLeft, "a zero TTL would defeat discovery caching")
     assert(300000L.refineEither[DiscoveryTtlMsC].isRight, "five minutes is the default and must hold")
-
-  extension (self: io.circe.JsonObject) private def toJson: Json = Json.fromJsonObject(self)

@@ -4,10 +4,6 @@ package schema
 import io.circe.{Json, JsonObject}
 import io.circe.derivation.Configuration
 import io.github.iltotore.iron.*
-import io.github.iltotore.iron.constraint.any.{DescribedAs, Not, StrictEqual}
-import io.github.iltotore.iron.constraint.collection.Length
-import io.github.iltotore.iron.constraint.numeric.{Greater, Less}
-import io.github.iltotore.iron.constraint.string.Match
 
 import scala.compiletime.*
 import scala.deriving.Mirror

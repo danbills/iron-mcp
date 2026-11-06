@@ -26,6 +26,11 @@ object ToolOutput extends StructuredOutput:
     val schema: Option[JsonObject]               = None
     def result(value: CallToolResult): CallToolResult = value
 
+  /** Plain text: a text block and no output schema. */
+  given text: ToolOutput[String] with
+    val schema: Option[JsonObject]            = None
+    def result(value: String): CallToolResult = CallToolResult.text(value)
+
   given either[O](using output: ToolOutput[O]): ToolOutput[Either[String, O]] with
     val schema: Option[JsonObject] = output.schema
     def result(value: Either[String, O]): CallToolResult = value.fold(CallToolResult.failed, output.result)

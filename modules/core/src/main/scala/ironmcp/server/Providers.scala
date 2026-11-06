@@ -20,10 +20,14 @@ trait ToolProvider[F[_]]:
   def list(params: ListToolsParams): F[ListToolsResult]
   def call(params: CallToolParams): F[CallToolResult | InputRequiredResult]
 
+  /** [[call]], for a tool that reports progress while it runs. */
+  def callEmitting(params: CallToolParams, @annotation.unused emit: Emit[F]): F[CallToolResult | InputRequiredResult] =
+    call(params)
+
 trait ResourceProvider[F[_]](using F: Applicative[F]):
   def list(params: ListResourcesParams): F[ListResourcesResult]
   def read(params: ReadResourceParams): F[ReadResourceResult | InputRequiredResult]
-  def templates(params: ListResourcesParams): F[ListResourceTemplatesResult] =
+  def templates(@annotation.unused params: ListResourcesParams): F[ListResourceTemplatesResult] =
     F.pure(ListResourceTemplatesResult(Nil, 0L, CacheScope.`private`))
 
 trait PromptProvider[F[_]]:

@@ -1,0 +1,37 @@
+@startuml discovery_and_401
+autonumber
+skinparam style strictuml
+skinparam sequenceMessageAlign center
+skinparam boxPadding 10
+skinparam participantPadding 15
+
+actor "Client\n(McpClient)" as Client
+box "iron-mcp Server (:5309)" #F8F9FA
+    participant "McpAuthServer\n(Resource Server)" as RS
+    participant "McpServer\n(Tools & Resources)" as MCP
+end box
+box "Keycloak on danarch (:10000)" #E8F4F8
+    participant "Authorization\nServer" as AS
+end box
+
+== 1. Discovery & 401 Gate (§9.2.2) ==
+Client -> RS: POST /mcp (No Authorization header)\nMCP-Protocol-Version: 2026-07-28\nMcp-Method: tools/list
+RS --> Client: 401 Unauthorized\nWWW-Authenticate: Bearer error="invalid_request",\n  resource_metadata="http://localhost:5309/.well-known/oauth-protected-resource/mcp"
+
+== 2. RFC 9728 Metadata Resolution ==
+Client -> RS: GET /.well-known/oauth-protected-resource/mcp
+RS --> Client: 200 OK\n{\n  "resource": "http://localhost:5309/mcp",\n  "authorization_servers": ["https://danarch.tail09c16c.ts.net:10000/realms/hacker-bros"],\n  "scopes_supported": ["mcp:read", "mcp:export"]\n}
+
+== 3. AS OIDC Discovery & Initial Token Acquisition ==
+Client -> AS: GET /.well-known/openid-configuration
+AS --> Client: 200 OK (token_endpoint, jwks_uri, issuer)
+Client -> AS: POST /protocol/openid-connect/token\ngrant_type=client_credentials&client_id=iron-mcp-client&scope=mcp:read
+AS --> Client: 200 OK\n{\n  "access_token": "eyJhbGciOiJSUzI1Ni...",\n  "token_type": "Bearer",\n  "scope": "mcp:read"\n}
+
+== 4. Authenticated MCP Operations ==
+Client -> RS: POST /mcp\nAuthorization: Bearer <token>\nMcp-Method: tools/list
+RS -> RS: Validate RS256 signature against Keycloak JWKS\nValidate RFC 8707 audience & expiration
+RS -> MCP: Dispatch tools/list
+MCP --> RS: Tools list result
+RS --> Client: 200 OK (JSON-RPC Success)
+@enduml

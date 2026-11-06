@@ -62,7 +62,7 @@ private[schema] object ConstraintSchemaMacros:
           case (Some(("StrictEqual", _)), Some(("Less", value)))    => List("maximum" -> value)
           case _                                                    => Nil
 
-      case applied @ AppliedType(constructor, args) =>
+      case AppliedType(constructor, args) =>
         constructor.typeSymbol.name match
           // Iron's human-readable wrapper; the meaning is underneath.
           case "DescribedAs" => read(args.head)
@@ -71,6 +71,11 @@ private[schema] object ConstraintSchemaMacros:
           case "Less"    => literal(args.head).map(v => List("exclusiveMaximum" -> v)).getOrElse(Nil)
           case "StrictEqual" => literal(args.head).map(v => List("const" -> v)).getOrElse(Nil)
           case "Match"       => literal(args.head).map(v => List("pattern" -> v)).getOrElse(Nil)
+
+          // Annotation-only constraints (see Annotations.scala).
+          case "Titled"  => literal(args.head).map(v => List("title" -> v)).getOrElse(Nil)
+          case "Default" => literal(args.head).map(v => List("default" -> v)).getOrElse(Nil)
+          case "Format"  => literal(args.head).map(v => List("format" -> v)).getOrElse(Nil)
 
           // A numeric constraint applied to the *length* of the value.
           case "Length" => asLength(read(args.head))

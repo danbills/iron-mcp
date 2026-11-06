@@ -64,6 +64,75 @@ has the schema of the type it wraps. `JsonSchemaOf.strict(schema)` rewrites a sc
 for OpenAI's strict structured outputs: every object closed, every property
 required, optional ones nullable, `oneOf` as `anyOf`.
 
+### Asking the user mid-call (elicitation)
+
+In 2026-07-28 a server never sends the client a request. A tool that needs the
+user answers `input_required` with the questions embedded, and the client calls
+again with the answers (multi round-trip requests). `McpTool.interactive` does
+both halves with types:
+
+```scala
+final case class Details(
+  title: String :| ((Titled["Meeting title"] & MinLength[1]) DescribedAs "Shown on the room display.")
+) derives Decoder, JsonSchemaOf
+
+given RequestStateCodec = RequestStateCodec.hmac(key)   // key: at least 32 bytes
+
+val book = McpTool.interactive[BookArgs]("book_meeting", "Books a room.") { (args, ctx) =>
+  IO.pure(ctx.requestState match
+    case None => ctx.ask("details")("details" -> Elicit.form[Details]("What is the meeting?"))
+    case Some(_) =>
+      ctx.accepted[Details]("details") match
+        case Some(details) => Interaction.done(s"Booked ${args.room}.")
+        case None          => Interaction.done("Not booked."))
+}
+```
+
+The form's `requestedSchema` is derived from `Details`, and `ctx.accepted` decodes
+the user's answer back into it with every refinement checked. `Titled["..."]`,
+`Default[v]` and `Format["date"]` add `title`, `default` and `format` keywords and
+constrain nothing.
+
+`requestState` travels through the client, which could edit it to skip a step.
+The `RequestStateCodec` in scope seals it with HMAC-SHA256 over the tool name, the
+arguments and the state, and a retry carrying an altered or replayed state never
+reaches the handler. Not sealing has to be spelled out:
+`RequestStateCodec.unprotected`. A client that did not declare `elicitation` gets
+an `isError` result instead of a question it cannot answer.
+
+The same round trip can ask the client's model for a completion, or ask for the
+client's filesystem roots:
+
+```scala
+ctx.ask("drafted")("summary" -> Sample.message(s"Summarize $topic.", maxTokens = 200))
+// next round:
+ctx.sampledText("summary")      // the model's answer: untrusted input
+
+ctx.ask("listed")("roots" -> Roots.list)
+// next round:
+ctx.roots("roots")              // Option[List[Root]]
+```
+
+### Reporting progress
+
+A tool built with `McpTool.reporting` gets an `Emit` for sending
+`notifications/progress` while it runs:
+
+```scala
+McpTool.reporting[IO, Work]("long_operation", "Simulates work.") { (args, emit) =>
+  (1 to 3).toList.traverse_(i => IO.sleep(1.second) >> emit.progress(i, total = Some(3)))
+    .as("Finished.")
+}
+```
+
+Progress is sent only when the request's `_meta` carries a `progressToken`
+(`client.callTool(name, args, progressToken = Some(...))`). On stdio, each
+notification is written before the reply. Over Streamable HTTP, the reply
+becomes an SSE stream when the client accepts `text/event-stream`. `McpServer`
+still holds no state: the transport passes in a sink with each request
+(`handleEmitting`). Log notifications are not offered, because 2026-07-28
+deprecates the `logging` capability.
+
 ## Why not the official Java SDK
 
 Two reasons, in order of weight:
@@ -167,7 +236,9 @@ the model can read and correct it. An Iron violation lands there too:
 | `McpServer[F]` (dispatch) | `Applicative` |
 | `ToolSet[F]` | `Applicative` |
 | `McpTool[A](...) { handler }` | `ApplicativeThrow`: a handler that fails becomes an `isError` result naming the tool |
-| `Stdio.serve` | `Async` + `LiftIO` (fs2 drives stdin/stdout through `IO` on Native) |
+| `Stdio.serve`, `StdioClient.spawn` | `Async` (blocking stdin/stdout, a child process) |
+| `Stdio.pipe`, `McpClient` | `MonadThrow` (+ `Ref.Make` for the client's request ids) |
+| `ClientTransport.lines` | `Concurrent` (matching replies to requests) |
 
 `McpTool[Greet](...)` infers `F` from the handler, so `IO` callers write the same
 code as before, and the tests run whole servers in plain `Either[Throwable, *]`.
@@ -217,7 +288,83 @@ from a null one, and several hosts reject `null` where they expect omission.
 | `protocol/{Tools,Resources,Prompts,Completion,Discover,Subscriptions,Notifications}.scala` | the full server surface |
 | `server/Providers.scala` | one trait per capability, polymorphic in `F` |
 | `server/McpServer.scala` | dispatch, version checks, capability derivation |
+| `server/McpTool.scala`, `server/Interaction.scala` | typed tools; `McpTool.interactive`, `Elicit`, `RequestStateCodec` |
 | `transport/{Wire,Stdio}.scala` | newline-delimited JSON-RPC on stdin/stdout |
+| `client/McpClient.scala` | the client: typed calls, `callToolGathering`, `InputHandlers` |
+| `client/{ClientTransport,StdioClient}.scala` | in-process, stdio framing, child processes |
+| `modules/http` (`iron-mcp-http`) | Streamable HTTP on http4s ember, server and client, JVM-only |
+
+### Streamable HTTP
+
+```scala
+libraryDependencies += "io.github.danbills" %% "iron-mcp-http" % "<version>"
+
+McpHttp.serve(McpHttp.routes(server), port = 5000).useForever
+```
+
+Stateless, as the revision intends: one POST per message, a JSON reply per
+request (or an SSE stream scoped to it, when the request reports progress and
+the client accepts `text/event-stream`), `202` for a notification, `405` for GET and DELETE. `MCP-Protocol-Version`,
+`Mcp-Method` and `Mcp-Name` are required and checked against the body (`400`,
+`-32020` on a mismatch); an unsupported version is `400` with `-32022`, an
+unknown method `404` with `-32601`. `Origin` and `Host` must be loopback by
+default (`403` otherwise, against DNS rebinding), and bodies over 4 MiB are
+refused unread. `McpHttp.routesFor(config)(request => ...)` builds the server per
+request, which is how an access token's claims reach the tools.
+
+### MCP Apps
+
+`iron-mcp-apps` (JVM and Scala Native) links a tool to an HTML View that
+Apps-capable hosts render:
+
+```scala
+McpTool[NoArgs]("get_system_health", "Returns current health status for all services.")(_ => health)
+  .withUi("ui://health/dashboard.html")                     // _meta.ui.resourceUri
+McpTool[NoArgs]("refresh_health", "Fetches latest health data.")(_ => health)
+  .withUi("ui://health/dashboard.html", Visibility.App)     // the View's refresh button only
+
+resources = Some(UiResources.of[IO](UiResource("ui://health/dashboard.html", "Health Dashboard", html)))
+```
+
+`modules/health` ports the handbook's health dashboard, View included. See
+`docs/out/mcp-apps.md`.
+
+### A client
+
+```scala
+StdioClient.spawn[IO]("./my-server").use { transport =>   // or McpHttpClient.ember(uri"http://localhost:5000/mcp")
+  for
+    client <- McpClient[IO](transport)
+    tools  <- client.allTools
+    result <- client.callTool("greet", JsonObject("name" -> "Ada".asJson, "times" -> 2.asJson))
+  yield result
+}
+```
+
+Every request carries the 2026-07-28 `_meta` envelope, so there is no handshake.
+Calls return the protocol's own result types; a JSON-RPC error is raised as
+`McpClientError.Rpc`, and an HTTP rejection as `McpClientError.Http` with its
+`WWW-Authenticate` challenges (`McpHttpClient.challenges` parses them).
+
+Calls that may answer `input_required` return `A | InputRequiredResult` for a
+caller that runs its own retry loop. `callToolGathering` runs it for you with
+the client's `InputHandlers`, which also declare its capabilities:
+
+```scala
+McpClient[IO](transport, handlers = InputHandlers.elicitation(params => askTheUser(params)))
+  .flatMap(_.callToolGathering("book_meeting", args, maxRounds = 10, deadline = 2.minutes))
+```
+
+`InputHandlers.sampling(params => runModel(params))` and `InputHandlers.roots(IO.pure(roots))`
+answer the other two kinds of request; combine handlers with `++`. Each one
+declares its capability, and a client without one is never asked.
+
+The deadline is one timeout around the whole exchange, so it also cancels a
+prompt still waiting on the user. `ClientTransport.inProcess(server)` runs a
+client against a server in the same process, through the wire encoding, which
+is how the tests work; `ClientTransport.lines` is the stdio framing over any
+pair of streams. The demo binary has a client mode: `ironmcp.demo.Main client
+<server command>`.
 
 ## Using it
 
@@ -231,9 +378,11 @@ Published for the JVM and Scala Native 0.5 from the same source.
 
 ```bash
 sbt "coreJVM/Test/testFull"   # protocol and schema suites
+sbt "http/Test/testFull"      # Streamable HTTP server and client, in memory
 sbt "weather/Test/testFull" "nasa/Test/testFull"   # the example tools, offline
 sbt "demoJVM/run"             # stdio server on the JVM
 sbt "demoNative/nativeLink"   # native binary
+sbt "demoNative/mcpb"         # the native binary as an MCP Bundle (.mcpb)
 ```
 
 ```bash
@@ -247,6 +396,20 @@ The Native binary is ~17 MB and answers `server/discover` in about 44 ms
 including process spawn — which is the point of avoiding reflection: a local
 harness spawns this per session.
 
+`demoNative/mcpb` packs that binary as an MCP Bundle (Handbook §5.5), a file
+Claude Desktop installs in one step. It writes a `manifest_version` 0.3
+`manifest.json` for a `binary` server on the build host's platform. Before
+packing, it runs the binary with `tools/list` and fails the build if the
+manifest's tools differ. To check the result:
+
+```bash
+npx @anthropic-ai/mcpb@2.1.2 validate target/out/native0.5/scala-3.9.0/iron-mcp-demo/mcpb/manifest.json
+npx @anthropic-ai/mcpb@2.1.2 info target/out/native0.5/scala-3.9.0/iron-mcp-demo/iron-mcp-demo-<version>.mcpb
+```
+
+A Native binary runs only on the platform it was linked on, so build one
+bundle per platform.
+
 ## Build notes
 
 - **sbt 2** with Scala Native. Both plugins publish under the `_sbt2_3` suffix;
@@ -257,11 +420,11 @@ harness spawns this per session.
 - **Scala 3.9.0**, the next LTS (succeeding 3.3). Native works because
   `nscplugin_3.9.0` is published for Scala Native 0.5.12; the compiler must
   match the Scala version exactly.
-- **Warnings are not errors.** The build runs `-Wunused:all -Wvalue-discard`
-  without `-Werror`, and `main` carries 14 unused-import/parameter warnings
-  (mostly unused `iron.circe.given` imports in `protocol/` and `schema/`). New
-  code should add none. sbt 2 caches compile results and a cache hit replays no
-  warnings, so see [AGENTS.md](AGENTS.md) before trusting a quiet build.
+- **Warnings are errors.** The build runs `-Wunused:all -Wvalue-discard -Werror`
+  on every module, test sources and Scala Native included. Code shared between
+  the JVM and Native must be clean on both: a `@nowarn` that suppresses
+  something on one platform is itself a warning on the other, so mark the
+  symbol `@annotation.unused` instead (see `Stdio.serve`).
 - **Scala 3.9.0 crashes on clause interleaving with named arguments**
   (`unexpected tree for type application`), which is why `McpTool.apply`
   returns a `Builder` instead of taking a second type-parameter clause.
@@ -269,20 +432,19 @@ harness spawns this per session.
 ## Stack
 
 Scala 3.9.0 · Iron 3.3.2 · Circe 0.14.16 · cats-effect 3.7.0 · fs2 3.13.0 ·
-Scala Native 0.5.12 · sbt 2.0.9. The JVM-only examples add http4s 0.23.37
-(Ember client) and cats-free 2.13.0.
+Scala Native 0.5.12 · sbt 2.0.9. The JVM-only HTTP module and examples add
+http4s 0.23.37 (Ember) and cats-free 2.13.0.
 
 ## Status
 
 The protocol layer, dispatcher and stdio transport are complete and tested,
-on the JVM and Scala Native. Two example servers call real APIs:
+on the JVM and Scala Native, and so is the client (stdio and in-process); Streamable HTTP, server and client, and elicitation (MRTR) on the JVM. Two example servers call real APIs:
 `modules/weather` (weather.gov forecast, conditions and alerts; no key) and
 `modules/nasa` (Astronomy Picture of the Day; `NASA_API_KEY`). Their tools are
 `Free` programs over request algebras, tested offline.
 
-Not yet built: resource, prompt and completion providers beyond the traits, an
-HTTP transport, and capability providers such as email, web search or computer
-use.
+Not yet built: resource, prompt and completion providers beyond the traits,
+a legacy-era (`initialize`) client, and capability providers such as email, web search or computer use.
 
 ## Releasing
 
