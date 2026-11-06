@@ -274,7 +274,7 @@ An MCP Apps View runs in the host's sandbox and never sees a token; the host sig
 
 ```scala
 def appServer(caller: Option[TokenClaims], revocations: RevocationList[IO]) =
-  val base     = SessionTools.declare(AuthPolicy.fromTools(tools*))
+  val base     = SessionTools.declare(AuthPolicy.fromTools(tools*)).views() // ui:// pages, readable before sign-in
   val unlocker = SessionTools.unlock[IO]("unlock_export", caller, base)("mcp:read", "mcp:export")
   val policy   = base.withTools(unlocker)
   val session  = List(SessionTools.whoami[IO](caller, policy), unlocker) ++ caller.map(SessionTools.signOut[IO](_, revocations))

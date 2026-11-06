@@ -177,4 +177,4 @@ A View never holds a token: the host signs in, steps up and retries when a serve
 - `ViewAuth.unlock(view, locked)` calls that tool; the host runs the step-up, and the View gets the new session or an `Outcome` saying what is missing.
 - `ViewAuth.classify` reads a refused call's error as `SignInRequired`, `MoreAccessRequired(scopes)` or `Forbidden`.
 
-Mark unlock tools `.withVisibility(Visibility.App)`: they are for Views, not the model. The authorization guide has the server side in full, including `DownstreamAuth` for Views whose tools call third-party APIs.
+Mark unlock tools `.withVisibility(Visibility.App)`: they are for Views, not the model. The policy denies anything it does not name, Views included: add `.views()` so hosts can fetch `ui://` pages before sign-in (they hold no user data; the tools behind them keep their own rules). The authorization guide has the server side in full, including `DownstreamAuth` for Views whose tools call third-party APIs.

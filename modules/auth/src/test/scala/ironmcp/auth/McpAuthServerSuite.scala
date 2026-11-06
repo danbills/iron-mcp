@@ -191,3 +191,13 @@ class McpAuthServerSuite extends CatsEffectSuite:
       assertEquals(parsed.head.get[String]("subject"), Right("alice"))
       assertEquals(parsed.head.get[String]("jti"), Right("t-1"))
       assert(lines.forall(!_.contains(token)))
+
+  test("views(): ui:// resources are readable without a token, other resources still are not"):
+    val withViews = McpAuthServer.Config(resource, List(issuer), policy.views().publicListing)
+    val app = McpAuthServer.routesForOptional(hsValidator, withViews)((_, caller) => IO.pure(Right(serverFor(caller)))).orNotFound
+    for
+      view  <- app.run(mcp("resources/read", Some("ui://reports/app.html")))
+      other <- app.run(mcp("resources/read", Some("file:///reports/q2.csv")))
+    yield
+      assertEquals(view.status, Status.Ok)
+      assertEquals(other.status, Status.Unauthorized)

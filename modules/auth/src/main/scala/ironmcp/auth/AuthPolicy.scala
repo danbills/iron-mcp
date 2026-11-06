@@ -132,6 +132,13 @@ final case class AuthPolicy(
 
   def prompt(name: String, access: Access): AuthPolicy = copy(prompts = prompts.updated(name, access))
 
+  /** MCP Apps Views (`ui://` resources), by default readable by anyone: a
+    * host fetches a View's HTML before any sign-in, and the page holds no
+    * user data (that comes from tool results, which the tools' own rules
+    * protect).
+    */
+  def views(access: Access = Access.Public): AuthPolicy = resource("ui://", access)
+
   /** Lets anonymous callers list and discover (for optional sign-in). */
   def publicListing: AuthPolicy = copy(methods = Access.Public)
 
