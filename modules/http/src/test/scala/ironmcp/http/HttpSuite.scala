@@ -113,6 +113,56 @@ class HttpSuite extends CatsEffectSuite:
   test("other paths are not the endpoint"):
     post(call("echo"), path = "/other").map((status, _) => assertEquals(status, Status.NotFound))
 
+  private val corsApp = McpHttp
+    .routes(McpServer[IO](info = Implementation(name = "http", version = "0.1.0"), tools = Some(ToolSet.of(echo))), McpHttp.Config(cors = true))
+    .orNotFound
+
+  private def header(response: Response[IO], name: String): Option[String] =
+    response.headers.get(CIString(name)).map(_.head.value)
+
+  private def preflight(origin: String) =
+    Request[IO](Method.OPTIONS, uri"/mcp").putHeaders(
+      Header.Raw(CIString("Origin"), origin),
+      Header.Raw(CIString("Access-Control-Request-Method"), "POST"),
+      Header.Raw(CIString("Access-Control-Request-Headers"), "content-type, mcp-protocol-version, mcp-method, mcp-name")
+    )
+
+  test("with cors, a preflight from an allowed origin gets 204 and what it asked to send"):
+    corsApp.run(preflight("http://localhost:8080")).map { response =>
+      assertEquals(response.status, Status.NoContent)
+      assertEquals(header(response, "Access-Control-Allow-Origin"), Some("http://localhost:8080"))
+      assertEquals(header(response, "Access-Control-Allow-Methods"), Some("POST, OPTIONS"))
+      assertEquals(header(response, "Access-Control-Allow-Headers"), Some("content-type, mcp-protocol-version, mcp-method, mcp-name"))
+    }
+
+  test("with cors, a preflight from a foreign origin is forbidden and names no origin"):
+    corsApp.run(preflight("https://evil.example")).map { response =>
+      assertEquals(response.status, Status.Forbidden)
+      assertEquals(header(response, "Access-Control-Allow-Origin"), None)
+    }
+
+  test("with cors, a reply to an allowed origin carries the CORS headers"):
+    val request = Request[IO](Method.POST, uri"/mcp")
+      .withEntity(call("echo"))
+      .putHeaders((("Origin" -> "http://localhost:8080") :: standard).map((k, v) => Header.Raw(CIString(k), v))*)
+    corsApp.run(request).map { response =>
+      assertEquals(response.status, Status.Ok)
+      assertEquals(header(response, "Access-Control-Allow-Origin"), Some("http://localhost:8080"))
+      assertEquals(header(response, "Access-Control-Expose-Headers"), Some("WWW-Authenticate, MCP-Protocol-Version"))
+    }
+
+  test("without cors, OPTIONS is 405 and replies carry no CORS headers"):
+    for
+      options <- app.run(preflight("http://localhost:8080"))
+      reply <- app.run(
+                 Request[IO](Method.POST, uri"/mcp")
+                   .withEntity(call("echo"))
+                   .putHeaders((("Origin" -> "http://localhost:8080") :: standard).map((k, v) => Header.Raw(CIString(k), v))*)
+               )
+    yield
+      assertEquals(options.status, Status.MethodNotAllowed)
+      assertEquals(header(reply, "Access-Control-Allow-Origin"), None)
+
 class HttpProgressSuite extends CatsEffectSuite:
   import cats.syntax.all.*
   import io.circe.syntax.*

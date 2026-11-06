@@ -52,12 +52,18 @@ object McpHttp:
     *                     anywhere else gets `403` (DNS rebinding guard)
     * @param allowHost    which `Host` values are served, for the same reason
     * @param maxBodyBytes larger bodies get `413` before any parsing
+    * @param cors         answer CORS for the origins `allowOrigin` accepts, so
+    *                     a host page in a browser (on another port or origin)
+    *                     can call: a preflight `OPTIONS` gets `204`, and replies
+    *                     carry `Access-Control-Allow-Origin` and expose
+    *                     `WWW-Authenticate` and `MCP-Protocol-Version`
     */
   final case class Config(
       path: EndpointPath = "/mcp",
       allowOrigin: String => Boolean = Loopback.origin,
       allowHost: String => Boolean = Loopback.host,
-      maxBodyBytes: Int = 4 * 1024 * 1024
+      maxBodyBytes: Int = 4 * 1024 * 1024,
+      cors: Boolean = false
   )
 
   object Loopback:
@@ -89,13 +95,52 @@ object McpHttp:
     Kleisli { (request: Request[F]) =>
       if request.uri.path.renderString != (config.path: String) then OptionT.none
       else
+        val origin = Cors.origin(request, config)
         OptionT.liftF {
           request.method match
-            case org.http4s.Method.POST => post(request, config, serverFor)
+            case org.http4s.Method.POST => post(request, config, serverFor).map(Cors.reply(origin))
+            case org.http4s.Method.OPTIONS if config.cors => F.pure(Cors.preflight(request, origin))
             case _ =>
               F.pure(Response[F](Status.MethodNotAllowed).putHeaders(Header.Raw(CIString("Allow"), "POST")))
         }
     }
+
+  /** CORS for browser hosts, when [[Config.cors]] is on. Only an origin that
+    * `allowOrigin` accepts is ever echoed back, so this opens nothing the
+    * Origin check would refuse.
+    */
+  private object Cors:
+    private val exposed = "WWW-Authenticate, MCP-Protocol-Version"
+
+    /** The request's `Origin`, if CORS is on and the origin is allowed. */
+    def origin[F[_]](request: Request[F], config: Config): Option[String] =
+      if !config.cors then None
+      else request.headers.get(CIString("Origin")).map(_.head.value).filter(config.allowOrigin)
+
+    def reply[F[_]](origin: Option[String])(response: Response[F]): Response[F] =
+      origin.fold(response)(o =>
+        response.putHeaders(
+          Header.Raw(CIString("Access-Control-Allow-Origin"), o),
+          Header.Raw(CIString("Access-Control-Expose-Headers"), exposed),
+          Header.Raw(CIString("Vary"), "Origin")
+        )
+      )
+
+    /** `204` with what the browser asked to send, for an allowed origin;
+      * `403` otherwise.
+      */
+    def preflight[F[_]](request: Request[F], origin: Option[String]): Response[F] =
+      origin match
+        case None => Response[F](Status.Forbidden)
+        case Some(o) =>
+          val asked = request.headers.get(CIString("Access-Control-Request-Headers")).map(_.head.value)
+          val allowed = Response[F](Status.NoContent).putHeaders(
+            Header.Raw(CIString("Access-Control-Allow-Origin"), o),
+            Header.Raw(CIString("Access-Control-Allow-Methods"), "POST, OPTIONS"),
+            Header.Raw(CIString("Access-Control-Max-Age"), "600"),
+            Header.Raw(CIString("Vary"), "Origin")
+          )
+          asked.fold(allowed)(h => allowed.putHeaders(Header.Raw(CIString("Access-Control-Allow-Headers"), h)))
 
   /** Binds the routes to `host:port`. The default host is loopback, as the spec
     * advises for a local server.
