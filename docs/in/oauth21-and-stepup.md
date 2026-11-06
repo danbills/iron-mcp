@@ -266,7 +266,55 @@ A client can publish its registration at an `https` URL that is its `client_id`,
 
 ---
 
-## 9. Keycloak
+## 9. Auth for MCP Apps, and third-party APIs
+
+### Views know what is locked, never the token
+
+An MCP Apps View runs in the host's sandbox and never sees a token; the host signs in, steps up and retries for it. What a View can know is what the server tells it:
+
+```scala mdoc:silent
+def appServer(caller: Option[TokenClaims], revocations: RevocationList[IO]) =
+  val base     = SessionTools.declare(AuthPolicy.fromTools(tools*))
+  val unlocker = SessionTools.unlock[IO]("unlock_export", caller, base)("mcp:read", "mcp:export")
+  val policy   = base.withTools(unlocker)
+  val session  = List(SessionTools.whoami[IO](caller, policy), unlocker) ++ caller.map(SessionTools.signOut[IO](_, revocations))
+  McpServer[IO](Implementation("reports", "1.0.0"), tools = Some(ScopedTools(ToolSet(tools ++ session), policy, caller)))
+```
+
+- `whoami` (public) returns who is signed in, the scopes held, the tools they unlock, and for each locked tool the scopes it needs and the `unlock_*` tool that asks for them.
+- `unlock_export` needs exactly those scopes and does nothing else. A View calls it, the host gets the `403 insufficient_scope` and runs the step-up, and the export itself has not run. With MCP Apps, give it `.withVisibility(Visibility.App)` so the model never sees it.
+- `sign_out` revokes the caller's session on this server.
+- Each tool's access is also in its `_meta` under `io.github.danbills/auth`, for hosts that want to draw locks.
+
+In the View (`iron-mcp-apps-view`), `ViewAuth.session(view)` reads `whoami` into a `ViewSession`; `ViewAuth.unlock(view, session.lock("export").get)` runs the step-up and returns the new session, or an `Outcome` (`SignInRequired`, `MoreAccessRequired(scopes)`, `Forbidden`) when the host could not.
+
+### Third-party APIs, without token passthrough
+
+The MCP token must never be forwarded to another API. When a tool needs the user's GitHub (or any OAuth API), `DownstreamAuth` gets the server its own token for that user, through their browser:
+
+```scala mdoc:silent
+def github(http: Client[IO], server: AuthorizationServerMetadata) =
+  for
+    vault <- TokenVault.inMemory[IO](sys.env("VAULT_KEY").getBytes.take(32)) // 32 bytes from a secrets manager
+    auth  <- DownstreamAuth[IO](
+      http,
+      Downstream("github", server, ClientAuth.SecretBasic("reports-mcp", sys.env("GH_SECRET")), "https://reports.example.com/oauth/downstream/github/callback", Set("repo:read")),
+      vault,
+      ticketKey = sys.env("TICKET_KEY").getBytes,
+      startUrl = "https://reports.example.com/oauth/downstream/github/start"
+    )
+  yield auth // mount auth.routes; in a tool: auth.withToken(claims, ctx)(token => ...)
+```
+
+Inside an interactive tool, `auth.withToken(claims, ctx)(token => ...)` runs with the user's token if the vault has one (refreshing it when it is about to expire). Otherwise the tool answers with a URL elicitation: a link to `start` carrying a ticket that is HMAC-signed, bound to the MCP user, single-use and valid for five minutes. `start` sends the browser to GitHub with PKCE; `callback` checks `state` and RFC 9207 `iss`, exchanges the code with the server's own credentials, and stores the token. The client retries the tool, which now finds it.
+
+- The vault is AES-256-GCM. Each entry is bound to its user and provider as associated data, so a row copied to another user does not decrypt.
+- The `start` and `callback` pages cannot be framed, cached or scripted, and leak no referrer.
+- A forwarded link could be opened by someone else, who would then connect *their* account to the asking user. Pass `browserUser` (who is signed in to this server in the browser) and `start` refuses anyone but the ticket's user.
+
+---
+
+## 10. Keycloak
 
 Keycloak does not act on the RFC 8707 `resource` parameter. A token's `aud` comes from the realm's **Audience mappers**, so each MCP client scope has one that adds the MCP resource URI. Then Keycloak's tokens validate like any other issuer's: `TokenValidator.Config(issuer, resource)` with the realm URL as issuer, and the default profile accepts Keycloak's `typ: Bearer` while refusing its ID and refresh tokens.
 
@@ -290,7 +338,7 @@ No secret is in the repository. The script prints the `IRON_MCP_KC_*` lines that
 
 ---
 
-## 10. The client: discovery, PKCE, refresh, step-up
+## 11. The client: discovery, PKCE, refresh, step-up
 
 `OAuthClient` is the client side, from the first `401` to a token:
 

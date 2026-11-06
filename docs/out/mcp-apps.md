@@ -168,3 +168,13 @@ The protocol underneath is small, so a hand-written View works too:
 ## Seeing it
 
 A plain MCP client sees ordinary tools and resources. To see a View, connect the server to an Apps-capable host, or use the example host in the ext-apps repository (`examples/basic-host`).
+
+## Authorization
+
+A View never holds a token: the host signs in, steps up and retries when a server tool answers `401` or `403`, as the spec intends. To show what is locked before anything fails, and to unlock it without running the locked action, use `iron-mcp-auth`'s session tools on the server (`SessionTools.whoami`, `SessionTools.unlock`, `SessionTools.signOut`) and `ViewAuth` in the View:
+
+- `ViewAuth.session(view)` calls `whoami` and returns a `ViewSession`: signed in or not, scopes, `unlocked` tools, and `locked` ones with the scopes they need and the `unlock_*` tool that asks for them.
+- `ViewAuth.unlock(view, locked)` calls that tool; the host runs the step-up, and the View gets the new session or an `Outcome` saying what is missing.
+- `ViewAuth.classify` reads a refused call's error as `SignInRequired`, `MoreAccessRequired(scopes)` or `Forbidden`.
+
+Mark unlock tools `.withVisibility(Visibility.App)`: they are for Views, not the model. The authorization guide has the server side in full, including `DownstreamAuth` for Views whose tools call third-party APIs.
