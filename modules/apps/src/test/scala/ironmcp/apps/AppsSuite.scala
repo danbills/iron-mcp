@@ -18,14 +18,15 @@ class AppsSuite extends CatsEffectSuite:
 
   final case class NoArgs(dummy: Option[String]) derives Decoder, JsonSchemaOf
 
-  private val view = UiResource("ui://demo/view.html", "Demo View", "<html><body>hi</body></html>", meta = UiResourceMeta(csp = Some(UiCsp(connectDomains = Some(List("https://api.example.com")))), prefersBorder = Some(true)))
+  private val view = UiResource("ui://demo/view.html", "Demo View", "<html><body>hi</body></html>", meta = UiResourceMeta(csp = Some(UiCsp(connectDomains = Some(List("https://api.example.com")))), permissions = Some(UiPermissions.microphone ++ UiPermissions.clipboardWrite), prefersBorder = Some(true)))
 
   private val server = McpServer[IO](
     Implementation("apps", "0"),
     tools = Some(
       ToolSet.of(
         McpTool[NoArgs]("show", "Shows the view.")(_ => IO.pure("shown")).withUi("ui://demo/view.html"),
-        McpTool[NoArgs]("refresh", "View-only refresh.")(_ => IO.pure("refreshed")).withUi("ui://demo/view.html", Visibility.App)
+        McpTool[NoArgs]("refresh", "View-only refresh.")(_ => IO.pure("refreshed")).withUi("ui://demo/view.html", Visibility.App),
+        McpTool[NoArgs]("poll", "Polled by the View.")(_ => IO.pure("stats")).withVisibility(Visibility.App)
       )
     ),
     resources = Some(UiResources.of[IO](view))
@@ -42,6 +43,9 @@ class AppsSuite extends CatsEffectSuite:
       assert(show.downField("ui").downField("visibility").failed, "no visibility means the host default")
       assertEquals(show.get[String]("ui/resourceUri"), Right("ui://demo/view.html"))
       assertEquals(tools(1).hcursor.downField("_meta").downField("ui").get[List[String]]("visibility"), Right(List("app")))
+      val poll = tools(2).hcursor.downField("_meta")
+      assertEquals(poll.downField("ui").focus, Some(Json.obj("visibility" -> Json.arr(Json.fromString("app")))))
+      assert(poll.downField("ui/resourceUri").failed, "no View, so no legacy URI either")
     }
 
   test("the View is listed and read as text/html;profile=mcp-app, with its _meta.ui"):
@@ -60,6 +64,7 @@ class AppsSuite extends CatsEffectSuite:
               val ui = meta.flatMap(_.get(McpApps.UiKey)).get
               assertEquals(ui.hcursor.downField("csp").get[List[String]]("connectDomains"), Right(List("https://api.example.com")))
               assertEquals(ui.hcursor.get[Boolean]("prefersBorder"), Right(true))
+              assertEquals(ui.hcursor.downField("permissions").focus, Some(Json.obj("microphone" -> Json.obj(), "clipboardWrite" -> Json.obj())))
             case other => fail(s"unexpected $other")
         case other => fail(s"unexpected $other")
 
@@ -103,3 +108,26 @@ a::after { content: "<\/style>$1"; } /* <\/STYLE> */
     assertEquals(slotted.split("</style>", -1).length, 2, "exactly one closing tag")
     assertEquals(UiHtml.inlineStyle("<html><HEAD></HEAD></html>", "p{}"), "<html><HEAD><style>\np{}\n</style>\n</HEAD></html>")
     assertEquals(UiHtml.inlineStyle("<p>x</p>", "p{}"), "<style>\np{}\n</style>\n<p>x</p>")
+
+  test("ResourceProvider.all lists every provider's resources and reads from the one that knows the URI"):
+    val videos = new ResourceProvider[IO]:
+      def list(params: ListResourcesParams): IO[ListResourcesResult] =
+        IO.pure(ListResourcesResult(List(Resource(uri = "videos://bunny", name = "video-bunny")), 1000L, CacheScope.`private`))
+      def read(params: ReadResourceParams): IO[ReadResourceResult | InputRequiredResult] =
+        if params.uri == "videos://bunny" then IO.pure(ReadResourceResult(List(ResourceContents.Text(params.uri, "mp4")), 1000L, CacheScope.`private`))
+        else IO.raiseError(McpException.resourceNotFound(params.uri))
+    val both   = McpServer[IO](Implementation("apps", "0"), resources = Some(ResourceProvider.all(UiResources.of[IO](view), videos)))
+    for
+      c       <- McpClient[IO](ClientTransport.inProcess(both))
+      listed  <- c.listResources()
+      ui      <- c.readResource("ui://demo/view.html")
+      video   <- c.readResource("videos://bunny")
+      missing <- c.readResource("videos://nope").attempt
+    yield
+      assertEquals(listed.resources.map(r => r.uri: String), List("ui://demo/view.html", "videos://bunny"))
+      assertEquals(listed.ttlMs: Long, 1000L)
+      assertEquals(listed.cacheScope, CacheScope.`private`)
+      assert(ui.isInstanceOf[ReadResourceResult] && video.isInstanceOf[ReadResourceResult])
+      missing match
+        case Left(McpClientError.Rpc(error)) => assertEquals(error.code.code, -32002)
+        case other                           => fail(s"unexpected $other")
