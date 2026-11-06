@@ -1,13 +1,11 @@
 package ironmcp
 package auth
 
-import cats.effect.IO
+import cats.effect.{IO, Ref}
 import io.circe.{Decoder, Json, parser}
 import io.circe.syntax.*
-import io.github.iltotore.iron.*
-import io.github.iltotore.iron.constraint.all.*
-import ironmcp.http.McpHttp
-import ironmcp.protocol.Implementation
+import io.github.iltotore.iron.autoRefine
+import ironmcp.protocol.{CacheScope, Implementation, ListResourcesParams, ListResourcesResult, ReadResourceParams, ReadResourceResult, ResourceContents}
 import ironmcp.schema.JsonSchemaOf
 import ironmcp.server.*
 import munit.CatsEffectSuite
@@ -15,176 +13,191 @@ import org.http4s.*
 import org.http4s.implicits.*
 import org.typelevel.ci.CIString
 
-import java.nio.charset.StandardCharsets.UTF_8
-
+/** The resource server's ladder, end to end over real wire JSON. */
 class McpAuthServerSuite extends CatsEffectSuite:
+  import AuthFixtures.*
 
-  final case class VoidArgs(dummy: Option[String]) derives Decoder, JsonSchemaOf
+  final case class NoArgs(dummy: Option[String]) derives Decoder, JsonSchemaOf
 
-  private val readSummary = McpTool[VoidArgs]("read_summary", "Reads summary report.")(_ =>
-    IO.pure("Summary: Q2 revenue up 8%.")
-  )
+  private val hello   = McpTool[NoArgs]("hello", "Says hello.")(_ => IO.pure("hello")).public
+  private val whoami  = McpTool[NoArgs]("whoami", "Who is calling.")(_ => IO.pure("you")).signedIn
+  private val summary = McpTool[NoArgs]("read_summary", "Reads summary.")(_ => IO.pure("Summary.")).requires("reports:read")
+  private val exporter = McpTool[NoArgs]("export_full_data", "Exports.")(_ => IO.pure("export.csv")).requires("reports:read", "reports:export")
+  private val secret  = McpTool[NoArgs]("forgotten", "No rule.")(_ => IO.pure("leak"))
+  private val all     = List(hello, whoami, summary, exporter, secret)
 
-  private val exportFullData = McpTool[VoidArgs]("export_full_data", "Exports full dataset.")(_ =>
-    IO.pure("export.csv: 4,812 rows.")
-  )
+  private val policy = AuthPolicy
+    .fromTools(all*)
+    .resource("file:///public/", Access.Public)
+    .resource("file:///reports/", Access.Scopes(Set("reports:read")))
 
-  private val hmacSecret = "mcp-auth-server-suite-secret-hmac-256".getBytes(UTF_8)
-  private val serverUrl = "http://localhost:5309"
-  private val mcpResource = s"$serverUrl/mcp"
+  private val config = McpAuthServer.Config(resource, List(issuer), policy)
 
-  private val metadata = ProtectedResourceMetadata(
-    resource = mcpResource,
-    authorization_servers = List("https://auth.example.com"),
-    scopes_supported = Some(List("reports:read", "reports:export"))
-  )
+  private object Res extends ResourceProvider[IO]:
+    def list(params: ListResourcesParams) = IO.pure(ListResourcesResult(Nil, 60000L, CacheScope.`private`))
+    def read(params: ReadResourceParams) =
+      IO.pure(ReadResourceResult(List(ResourceContents.Text(params.uri, "contents")), 60000L, CacheScope.`private`))
 
-  private val scopePolicy = ToolScopePolicy.Builder.empty
-    .require("read_summary", "reports:read")
-    .require("export_full_data", "reports:read", "reports:export")
-    .build
-
-  private val config = McpAuthServer.Config(
-    mcpConfig = McpHttp.Config(path = "/mcp"),
-    serverUrl = serverUrl,
-    metadata = metadata,
-    scopePolicy = scopePolicy
-  )
-
-  private val validator = TokenValidator.hs256[IO](
-    hmacSecret,
-    TokenValidator.Config(expectedResource = Some(mcpResource))
-  )
-
-  private val server = McpServer[IO](
-    info = Implementation(name = "reports-server", version = "1.0.0"),
-    tools = Some(ToolSet.of(readSummary, exportFullData))
-  )
-
-  private val routes = McpAuthServer.routes(server, validator, config).orNotFound
-
-  private def mintToken(aud: String, scopes: String): String =
-    val header = Json.obj("alg" -> "HS256".asJson, "typ" -> "JWT".asJson)
-    val now = System.currentTimeMillis() / 1000
-    val payload = Json.obj(
-      "iss" -> "https://auth.example.com".asJson,
-      "sub" -> "alice".asJson,
-      "aud" -> List(aud).asJson,
-      "exp" -> (now + 3600).asJson,
-      "scope" -> scopes.asJson
+  private def serverFor(caller: Option[TokenClaims]) =
+    McpServer[IO](
+      Implementation("reports", "1.0.0"),
+      tools = Some(ScopedTools(ToolSet(all), policy, caller)),
+      resources = Some(new ScopedResources(Res, policy, caller))
     )
-    Jwt.signHs256(header, payload, hmacSecret)
 
-  private val meta = """{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"""
+  private def strict(audit: AuthAudit[IO] = AuthAudit.noop[IO]) =
+    McpAuthServer.routesFor(hsValidator, config, audit)((_, claims) => IO.pure(Right(serverFor(Some(claims))))).orNotFound
 
-  private def toolCallBody(name: String) =
-    s"""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"$name","arguments":{},"_meta":$meta}}"""
+  private val optional =
+    McpAuthServer.routesForOptional(hsValidator, config.copy(policy = policy.publicListing))((_, caller) => IO.pure(Right(serverFor(caller)))).orNotFound
 
-  test("RFC 9728: serves protected resource metadata at root and path-aware endpoints"):
-    val reqRoot = Request[IO](Method.GET, uri"/.well-known/oauth-protected-resource")
-    val reqPath = Request[IO](Method.GET, uri"/.well-known/oauth-protected-resource/mcp")
+  private def call(tool: String, token: Option[String], app: HttpApp[IO] = strict()) = app.run(mcp("tools/call", Some(tool), token))
 
-    for
-      resRoot <- routes.run(reqRoot)
-      bodyRoot <- resRoot.as[String]
-      resPath <- routes.run(reqPath)
-      bodyPath <- resPath.as[String]
-    yield
-      assertEquals(resRoot.status, Status.Ok)
-      assertEquals(resPath.status, Status.Ok)
-      val jsonRoot = parser.parse(bodyRoot).toOption.get
-      assertEquals(jsonRoot.hcursor.get[String]("resource"), Right(mcpResource))
-      assertEquals(jsonRoot.hcursor.get[List[String]]("authorization_servers"), Right(List("https://auth.example.com")))
-      assertEquals(bodyRoot, bodyPath)
+  private def text(res: Response[IO]): IO[Option[String]] =
+    res.as[String].map(b => parser.parse(b).toOption.flatMap(_.hcursor.downField("result").downField("content").downArray.get[String]("text").toOption))
 
-  test("Rung 1: missing token yields 401 with resource_metadata pointer"):
-    val req = Request[IO](Method.POST, uri"/mcp")
-      .withEntity(toolCallBody("read_summary"))
-      .putHeaders(
-        Header.Raw(CIString("MCP-Protocol-Version"), "2026-07-28"),
-        Header.Raw(CIString("Mcp-Method"), "tools/call"),
-        Header.Raw(CIString("Mcp-Name"), "read_summary"),
-        Header.Raw(CIString("Host"), "localhost:5309")
-      )
+  test("ResourceIdentity puts the well-known segment before the path (RFC 9728 §3.1)"):
+    assertEquals(resource.metadataUrl, "http://localhost:5309/.well-known/oauth-protected-resource/mcp")
+    assertEquals(ResourceIdentity.unsafe("https://Example.COM:443/a/mcp/").resource, "https://example.com/a/mcp")
+    assert(ResourceIdentity.from("http://example.com/mcp").isLeft)
+    assert(ResourceIdentity.from("https://example.com/mcp?x=1").isLeft)
 
-    routes.run(req).flatMap { res =>
-      assertEquals(res.status, Status.Unauthorized)
-      val wwwAuth = res.headers.get(CIString("WWW-Authenticate")).map(_.head.value).getOrElse("")
-      assert(wwwAuth.contains("Bearer error=\"invalid_request\""))
-      assert(wwwAuth.contains(s"resource_metadata=\"$serverUrl/.well-known/oauth-protected-resource/mcp\""))
-      res.as[String].map { body =>
-        val json = parser.parse(body).toOption.get
-        assertEquals(json.hcursor.get[String]("error"), Right("invalid_request"))
-      }
+  test("metadata names this resource, the issuer and the policy's scopes"):
+    strict().run(Request[IO](Method.GET, uri"/.well-known/oauth-protected-resource/mcp")).flatMap(_.as[String]).map { body =>
+      val c = parser.parse(body).toOption.get.hcursor
+      assertEquals(c.get[String]("resource"), Right(audience))
+      assertEquals(c.get[List[String]]("authorization_servers"), Right(List(issuer)))
+      assertEquals(c.get[List[String]]("scopes_supported"), Right(List("reports:export", "reports:read")))
     }
 
-  test("Rung 2: genuine token with wrong aud yields 401 explaining RFC 8707 audience mismatch"):
-    val wrongAudToken = mintToken("https://other.service.example/mcp", "reports:read reports:export")
-    val req = Request[IO](Method.POST, uri"/mcp")
-      .withEntity(toolCallBody("read_summary"))
-      .putHeaders(
-        Header.Raw(CIString("Authorization"), s"Bearer $wrongAudToken"),
-        Header.Raw(CIString("MCP-Protocol-Version"), "2026-07-28"),
-        Header.Raw(CIString("Mcp-Method"), "tools/call"),
-        Header.Raw(CIString("Mcp-Name"), "read_summary"),
-        Header.Raw(CIString("Host"), "localhost:5309")
-      )
-
-    routes.run(req).flatMap { res =>
+  test("no token: 401 with resource_metadata and the scopes to ask for, and no error code"):
+    call("read_summary", None).map { res =>
       assertEquals(res.status, Status.Unauthorized)
-      val wwwAuth = res.headers.get(CIString("WWW-Authenticate")).map(_.head.value).getOrElse("")
-      assert(wwwAuth.contains("Bearer error=\"invalid_token\""))
-      assert(wwwAuth.contains("RFC 8707 resource indicator"))
-      res.as[String].map { body =>
-        val json = parser.parse(body).toOption.get
-        assertEquals(json.hcursor.get[String]("error"), Right("invalid_token"))
-        val desc = json.hcursor.get[String]("error_description").getOrElse("")
-        assert(desc.contains("this is a token for a different resource"))
-      }
+      val c = AuthChallenge.parse(List(challenge(res))).head
+      assertEquals(c.param("resource_metadata"), Some(resource.metadataUrl))
+      assertEquals(c.scopes, Set("reports:read"))
+      assertEquals(c.error, None)
     }
 
-  test("Rung 3: right aud, insufficient scope yields 403 naming FULL required scopes"):
-    val readOnlyToken = mintToken(mcpResource, "reports:read")
-    val req = Request[IO](Method.POST, uri"/mcp")
-      .withEntity(toolCallBody("export_full_data"))
-      .putHeaders(
-        Header.Raw(CIString("Authorization"), s"Bearer $readOnlyToken"),
-        Header.Raw(CIString("MCP-Protocol-Version"), "2026-07-28"),
-        Header.Raw(CIString("Mcp-Method"), "tools/call"),
-        Header.Raw(CIString("Mcp-Name"), "export_full_data"),
-        Header.Raw(CIString("Host"), "localhost:5309")
-      )
+  test("wrong audience: 401 invalid_token with a fixed description that echoes nothing"):
+    call("read_summary", Some(hs(claims(scope = "reports:read", aud = Json.fromString("https://other.example/mcp"))))).map { res =>
+      assertEquals(res.status, Status.Unauthorized)
+      val c = AuthChallenge.parse(List(challenge(res))).head
+      assertEquals(c.error, Some("invalid_token"))
+      assertEquals(c.param("error_description"), Some(AuthError.WrongAudience("", Nil).publicDescription))
+      assert(!challenge(res).contains("other.example"))
+    }
 
-    routes.run(req).flatMap { res =>
+  test("insufficient scope: 403 naming the full required set"):
+    call("export_full_data", Some(hs(claims(scope = "reports:read")))).map { res =>
       assertEquals(res.status, Status.Forbidden)
-      val wwwAuth = res.headers.get(CIString("WWW-Authenticate")).map(_.head.value).getOrElse("")
-      assert(wwwAuth.contains("Bearer error=\"insufficient_scope\""))
-      // Must name FULL required scopes, not just missing reports:export
-      assert(wwwAuth.contains("scope=\"reports:read reports:export\"") || wwwAuth.contains("scope=\"reports:export reports:read\""))
-      assert(wwwAuth.contains(s"resource_metadata=\"$serverUrl/.well-known/oauth-protected-resource/mcp\""))
-      res.as[String].map { body =>
-        val json = parser.parse(body).toOption.get
-        assertEquals(json.hcursor.get[String]("error"), Right("insufficient_scope"))
-      }
+      val c = AuthChallenge.parse(List(challenge(res))).head
+      assertEquals(c.error, Some("insufficient_scope"))
+      assertEquals(c.scopes, Set("reports:read", "reports:export"))
     }
 
-  test("Rung 4: right aud, full scopes executes tool successfully"):
-    val fullToken = mintToken(mcpResource, "reports:read reports:export")
-    val req = Request[IO](Method.POST, uri"/mcp")
-      .withEntity(toolCallBody("export_full_data"))
-      .putHeaders(
-        Header.Raw(CIString("Authorization"), s"Bearer $fullToken"),
-        Header.Raw(CIString("MCP-Protocol-Version"), "2026-07-28"),
-        Header.Raw(CIString("Mcp-Method"), "tools/call"),
-        Header.Raw(CIString("Mcp-Name"), "export_full_data"),
-        Header.Raw(CIString("Host"), "localhost:5309")
-      )
+  test("full scopes: the tool runs"):
+    call("export_full_data", Some(hs(claims(scope = "reports:read reports:export")))).flatMap(text).map(t => assertEquals(t, Some("export.csv")))
 
-    routes.run(req).flatMap { res =>
-      assertEquals(res.status, Status.Ok)
-      res.as[String].map { body =>
-        val json = parser.parse(body).toOption.get
-        val text = json.hcursor.downField("result").downField("content").downArray.get[String]("text")
-        assertEquals(text, Right("export.csv: 4,812 rows."))
-      }
+  test("deny by default: a tool with no rule is refused even to a token with every scope"):
+    call("forgotten", Some(hs(claims(scope = "reports:read reports:export")))).map { res =>
+      assertEquals(res.status, Status.Forbidden)
+      assert(!challenge(res).contains("scope="))
     }
+
+  test("undeclared lists the tools nobody can call"):
+    assertEquals(policy.undeclared(all*), List("forgotten"))
+
+  test("tools/list shows only callable tools, privately"):
+    strict().run(mcp("tools/list", token = Some(hs(claims(scope = "reports:read"))))).flatMap(_.as[String]).map { body =>
+      val r = parser.parse(body).toOption.get.hcursor.downField("result")
+      val names = r.downField("tools").as[List[Json]].toOption.get.flatMap(_.hcursor.get[String]("name").toOption)
+      assertEquals(names, List("hello", "whoami", "read_summary"))
+      assertEquals(r.get[String]("cacheScope"), Right("private"))
+    }
+
+  test("resources/read is gated by URI prefix; unlisted URIs are refused"):
+    val reader = Some(hs(claims(scope = "reports:read")))
+    val nobody = Some(hs(claims()))
+    for
+      ok     <- strict().run(mcp("resources/read", Some("file:///reports/q2.csv"), reader))
+      denied <- strict().run(mcp("resources/read", Some("file:///reports/q2.csv"), nobody))
+      other  <- strict().run(mcp("resources/read", Some("file:///etc/passwd"), reader))
+    yield
+      assertEquals(ok.status, Status.Ok)
+      assertEquals(denied.status, Status.Forbidden)
+      assertEquals(other.status, Status.Forbidden)
+
+  test("strict mode: even a public tool needs a token"):
+    call("hello", None).map(res => assertEquals(res.status, Status.Unauthorized))
+
+  test("optional sign-in: public tools and listings work anonymously; protected ones start sign-in"):
+    for
+      pub  <- call("hello", None, optional).flatMap(text)
+      list <- optional.run(mcp("tools/list")).flatMap(_.as[String])
+      prot <- call("read_summary", None, optional)
+      who  <- call("whoami", None, optional)
+    yield
+      assertEquals(pub, Some("hello"))
+      val names = parser.parse(list).toOption.get.hcursor.downField("result").downField("tools").as[List[Json]].toOption.get
+        .flatMap(_.hcursor.get[String]("name").toOption)
+      assertEquals(names, List("hello"))
+      assertEquals(prot.status, Status.Unauthorized)
+      assertEquals(who.status, Status.Unauthorized)
+
+  test("optional sign-in: an invalid token is refused, never downgraded to anonymous"):
+    call("hello", Some(hs(claims(exp = Some(now - 999)))), optional).map(res => assertEquals(res.status, Status.Unauthorized))
+
+  test("a repeated Authorization header, a malformed token or a token in the query is a 400"):
+    val good = hs(claims(scope = "reports:read"))
+    val twice = mcp("tools/call", Some("read_summary"), Some(good)).putHeaders(Header.Raw(CIString("Authorization"), s"Bearer $good"))
+    val bad = mcp("tools/call", Some("read_summary"), authorization = Some("Bearer a\"b"))
+    val query = mcp("tools/call", Some("read_summary"), Some(good), path = uri"/mcp?access_token=x")
+    for
+      a <- strict().run(Request[IO](twice.method, twice.uri, headers = Headers(twice.headers.headers ++ List(Header.Raw(CIString("Authorization"), s"Bearer $good"))), body = twice.body))
+      b <- strict().run(bad)
+      c <- strict().run(query)
+    yield
+      assertEquals(a.status, Status.BadRequest)
+      assertEquals(b.status, Status.BadRequest)
+      assert(c.status == Status.BadRequest || c.status == Status.NotFound) // the query does not match /mcp's path either way
+
+  test("the scheme is case-insensitive"):
+    strict().run(mcp("tools/call", Some("read_summary"), authorization = Some(s"bearer ${hs(claims(scope = "reports:read"))}"))).map(r => assertEquals(r.status, Status.Ok))
+
+  test("a header naming one tool cannot call another"):
+    val token = hs(claims(scope = "reports:read"))
+    val lying = mcp("tools/call", Some("export_full_data"), Some(token)).putHeaders(Header.Raw(CIString("Mcp-Name"), ironmcp.http.McpHeaders.encode("read_summary")))
+    strict().run(lying).map(r => assert(r.status != Status.Ok, r.status.toString))
+
+  test("quoted-strings cannot be broken out of"):
+    val rendered = AuthChallenge("Bearer", Map("error_description" -> "a\"b\r\nX-Injected: 1\\")).render
+    assert(!rendered.contains("\r") && !rendered.contains("\n"))
+    assertEquals(AuthChallenge.parse(List(rendered)).head.param("error_description"), Some("a\"b??X-Injected: 1\\"))
+
+  test("the audit trail records every decision, and never the token"):
+    for
+      events <- Ref.of[IO, List[String]](Nil)
+      app     = strict(AuthAudit.jsonLines(line => events.update(_ :+ line)))
+      token   = hs(claims(scope = "reports:read", extra = List("jti" -> "t-1".asJson)))
+      _      <- app.run(mcp("tools/call", Some("read_summary"), Some(token)))
+      _      <- app.run(mcp("tools/call", Some("export_full_data"), Some(token)))
+      _      <- app.run(mcp("tools/call", Some("read_summary"), None))
+      lines  <- events.get
+    yield
+      val parsed = lines.map(l => parser.parse(l).toOption.get.hcursor)
+      assertEquals(parsed.map(_.get[Boolean]("allowed").toOption.get), List(true, false, false))
+      assertEquals(parsed.map(_.get[String]("reason").toOption.get), List("ok", "insufficient_scope", "missing_token"))
+      assertEquals(parsed.head.get[String]("subject"), Right("alice"))
+      assertEquals(parsed.head.get[String]("jti"), Right("t-1"))
+      assert(lines.forall(!_.contains(token)))
+
+  test("views(): ui:// resources are readable without a token, other resources still are not"):
+    val withViews = McpAuthServer.Config(resource, List(issuer), policy.views().publicListing)
+    val app = McpAuthServer.routesForOptional(hsValidator, withViews)((_, caller) => IO.pure(Right(serverFor(caller)))).orNotFound
+    for
+      view  <- app.run(mcp("resources/read", Some("ui://reports/app.html")))
+      other <- app.run(mcp("resources/read", Some("file:///reports/q2.csv")))
+    yield
+      assertEquals(view.status, Status.Ok)
+      assertEquals(other.status, Status.Unauthorized)

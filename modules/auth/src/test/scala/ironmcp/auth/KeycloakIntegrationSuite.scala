@@ -6,54 +6,41 @@ import munit.CatsEffectSuite
 import org.http4s.*
 import org.http4s.ember.client.EmberClientBuilder
 
+/** Against a live Keycloak realm (the `iron-mcp` realm from
+  * `modules/auth/keycloak/`). Skipped, and reported as skipped, unless these
+  * are set:
+  *
+  *   - `IRON_MCP_KC_REALM`    the realm URL, e.g. https://danarch.tail09c16c.ts.net:10000/realms/iron-mcp
+  *   - `IRON_MCP_KC_CLIENT`   a confidential client with the client credentials grant
+  *   - `IRON_MCP_KC_SECRET`   its secret
+  *   - `IRON_MCP_KC_RESOURCE` the MCP resource its audience mapper adds
+  */
 class KeycloakIntegrationSuite extends CatsEffectSuite:
 
-  val keycloakRealm = "https://danarch.tail09c16c.ts.net:10000/realms/hacker-bros"
-  val clientId = "iron-mcp-client"
-  val clientSecret = "iron-mcp-secret-12345"
+  private val env = List("IRON_MCP_KC_REALM", "IRON_MCP_KC_CLIENT", "IRON_MCP_KC_SECRET", "IRON_MCP_KC_RESOURCE").map(k => k -> sys.env.get(k)).toMap
 
-  test("Live Keycloak: OIDC discovery, client credentials grant, RS256 JWKS verification, and step-up union"):
-    EmberClientBuilder.default[IO].build.use { client =>
-      val kc = new KeycloakClient[IO](client, Uri.unsafeFromString(keycloakRealm))
+  private def setting(k: String) = env(k).get
 
-      // Check if Keycloak is reachable; if not, skip gracefully for hermetic offline builds
-      kc.discover.attempt.flatMap {
-        case Left(_) =>
-          IO(println("Keycloak on danarch not reachable; skipping live integration test."))
-        case Right(oidc) =>
-          for
-            _ <- IO(assertEquals(oidc.issuer, keycloakRealm))
-            tokenEndpoint = Uri.unsafeFromString(oidc.token_endpoint)
-            jwksUri = Uri.unsafeFromString(oidc.jwks_uri)
-
-            // 1. Initial grant for mcp:read
-            tok1 <- kc.clientCredentials(tokenEndpoint, clientId, clientSecret, scopes = Set("mcp:read"))
-            _ = assert(tok1.grantedScopes.contains("mcp:read"))
-            _ = assert(!tok1.grantedScopes.contains("mcp:export"))
-
-            // 2. RS256 token signature verification against Keycloak's published JWKS
-            jwksProvider <- JwksProvider.keycloak[IO](client, jwksUri)
-            validator = TokenValidator.rs256[IO](
-              jwksProvider,
-              TokenValidator.Config(expectedIssuer = Some(keycloakRealm))
-            )
-
-            claims1 <- validator.validate(tok1.access_token)
-            _ = assert(claims1.isRight)
-            c1 = claims1.toOption.get
-            _ = assertEquals(c1.iss, keycloakRealm)
-            _ = assert(c1.scopes.contains("mcp:read"))
-
-            // 3. Step-up: acquire token for the UNION (mcp:read mcp:export)
-            tok2 <- kc.clientCredentials(tokenEndpoint, clientId, clientSecret, scopes = Set("mcp:read", "mcp:export"))
-            _ = assert(tok2.grantedScopes.contains("mcp:read"))
-            _ = assert(tok2.grantedScopes.contains("mcp:export"))
-
-            claims2 <- validator.validate(tok2.access_token)
-            _ = assert(claims2.isRight)
-            c2 = claims2.toOption.get
-            _ = assert(c2.scopes.contains("mcp:read"))
-            _ = assert(c2.scopes.contains("mcp:export"))
-          yield ()
-      }
+  test("live Keycloak: tokens are audience-bound, typed and verifiable; step-up widens them"):
+    assume(env.values.forall(_.isDefined), s"set ${env.collect { case (k, None) => k }.mkString(", ")} to run against Keycloak")
+    EmberClientBuilder.default[IO].build.use { http =>
+      val kc       = new KeycloakClient[IO](http, Uri.unsafeFromString(setting("IRON_MCP_KC_REALM")))
+      val auth     = ClientAuth.SecretPost(setting("IRON_MCP_KC_CLIENT"), setting("IRON_MCP_KC_SECRET"))
+      val resource = ResourceIdentity.unsafe(setting("IRON_MCP_KC_RESOURCE"))
+      for
+        oidc      <- kc.discover
+        keys      <- JwksProvider.remote[IO](http, Uri.unsafeFromString(oidc.jwks_uri))
+        validator  = TokenValidator.jwks[IO](keys, TokenValidator.Config(oidc.issuer, resource))
+        read      <- kc.clientCredentials(oidc, auth, Set("mcp:read"))
+        claims1   <- validator.validate(read.access_token)
+        both      <- kc.clientCredentials(oidc, auth, Set("mcp:read", "mcp:export"))
+        claims2   <- validator.validate(both.access_token)
+        otherAud   = TokenValidator.jwks[IO](keys, TokenValidator.Config(oidc.issuer, "https://not-this-server.example/mcp"))
+        wrong     <- otherAud.validate(read.access_token)
+      yield
+        assert(claims1.isRight, claims1.toString)
+        assert(claims1.toOption.get.scopes.contains("mcp:read"))
+        assert(!claims1.toOption.get.scopes.contains("mcp:export"))
+        assert(claims2.toOption.exists(_.hasScopes(Set("mcp:read", "mcp:export"))), claims2.toString)
+        assertEquals(wrong.left.map(_.kind), Left("audience"))
     }

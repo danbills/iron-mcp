@@ -1,7 +1,7 @@
 package ironmcp
 package auth
 
-import cats.effect.{Concurrent, Ref}
+import cats.effect.{Ref, Temporal}
 import cats.syntax.all.*
 import io.circe.JsonObject
 import ironmcp.client.{McpClient, McpClientError}
@@ -10,148 +10,148 @@ import org.http4s.*
 import org.http4s.headers.Authorization
 import org.typelevel.ci.CIString
 
-import scala.util.matching.Regex
+import scala.concurrent.duration.*
 
-/** Client implementing OAuth 2.1 Step-Up Authorization and the
-  * **Scope-Union Rule** (§9.7.4, SEP-2350).
+/** A client that keeps an access token current and steps up when a server
+  * asks for more (SEP-2350).
   *
-  * When a tool call encounters an HTTP 403 `insufficient_scope` challenge, the client
-  * re-authorizes with the Authorization Server for the **union** of the scopes
-  * it has already requested and the scopes the challenge names:
+  * On `403 insufficient_scope` it asks for the **union** of what it asked for
+  * before and what the challenge names, then retries:
   *
-  *   `requestedScopes_new = requestedScopes_previous ∪ challengeScopes`
+  *   `requested_new = requested_previous ∪ challenged`
   *
-  * This prevents the `--naive` regression where requesting only the missing scopes
-  * replaces the token and breaks previously working tools.
+  * Asking for the missing scope alone would replace the token with one that
+  * lacks the scopes that already worked.
+  *
+  * A server picks the scopes in its challenge, so a hostile or compromised
+  * server could ask the client to request far more than it needs. With
+  * `allowedScopes`, a challenge naming anything outside that set is refused
+  * ([[StepUpClient.ScopeNotAllowed]]) rather than sent to the authorization
+  * server.
+  *
+  * A DPoP token (`token_type: DPoP`) is sent as `Authorization: DPoP`; route
+  * the HTTP client through [[Dpop.client]] to add the proofs. A token about to
+  * expire is renewed before it is sent.
   */
-final class StepUpClient[F[_]: Concurrent] private (
+final class StepUpClient[F[_]: Temporal] private (
     stateRef: Ref[F, StepUpClient.State],
     authorizeFn: Set[String] => F[TokenResponse],
     strategy: ScopeStrategy,
-    maxRetries: Int
+    maxRetries: Int,
+    allowedScopes: Option[Set[String]],
+    renewBefore: FiniteDuration
 ):
 
   def state: F[StepUpClient.State] = stateRef.get
 
   /** Acquires an initial token for the specified scopes. */
   def initialAuthorize(scopes: Set[String]): F[TokenResponse] =
-    for
-      resp <- authorizeFn(scopes)
-      _ <- stateRef.update { s =>
-        s.copy(
-          requestedScopes = scopes,
-          grantedScopes = resp.grantedScopes,
-          currentToken = Some(resp.access_token)
-        )
-      }
-    yield resp
+    authorizeFn(scopes).flatTap(resp => hold(resp, requested = scopes))
 
-  /** Current HTTP Authorization header if a token is held. */
+  /** The `Authorization` header for the token held, renewed first if it
+    * expires within `renewBefore`.
+    */
   def authHeaders: F[Headers] =
-    stateRef.get.map { s =>
-      s.currentToken match
-        case Some(token) => Headers(Authorization(Credentials.Token(CIString("Bearer"), token)))
-        case None        => Headers.empty
-    }
+    for
+      now <- Temporal[F].realTime.map(_.toSeconds)
+      s   <- stateRef.get
+      _ <- (s.currentToken, s.expiresAt) match
+        case (Some(_), Some(at)) if at - renewBefore.toSeconds <= now =>
+          authorizeFn(s.requestedScopes).flatMap(resp => hold(resp, s.requestedScopes)).void
+        case _ => Temporal[F].unit
+      held <- stateRef.get
+    yield held.currentToken match
+      case Some(token) => Headers(Authorization(Credentials.Token(CIString(held.scheme), token)))
+      case None        => Headers.empty
 
   /** Invokes a tool by name through `client`, handling step-up challenges automatically. */
-  def callTool(
-      client: McpClient[F],
-      toolName: String,
-      arguments: JsonObject = JsonObject.empty
-  ): F[CallToolResult | InputRequiredResult] =
+  def callTool(client: McpClient[F], toolName: String, arguments: JsonObject = JsonObject.empty): F[CallToolResult | InputRequiredResult] =
     executeWithRetry(client.callTool(toolName, arguments), toolName, retriesLeft = maxRetries)
 
   /** Executes an arbitrary client operation with step-up handling. */
-  def executeWithRetry[A](
-      action: F[A],
-      opName: String,
-      retriesLeft: Int
-  ): F[A] =
+  def executeWithRetry[A](action: F[A], opName: String, retriesLeft: Int): F[A] =
     action.recoverWith {
       case err: McpClientError.Http if err.status == 403 && retriesLeft > 0 =>
-        handleScopeChallenge(err, opName).flatMap(_ => executeWithRetry(action, opName, retriesLeft - 1))
+        handleScopeChallenge(err, opName) *> executeWithRetry(action, opName, retriesLeft - 1)
       case err: McpClientError.Http if err.status == 401 && retriesLeft > 0 =>
-        handle401Challenge(err, opName).flatMap(_ => executeWithRetry(action, opName, retriesLeft - 1))
+        reauthorize(err) *> executeWithRetry(action, opName, retriesLeft - 1)
+    }
+
+  private def hold(resp: TokenResponse, requested: Set[String]): F[Unit] =
+    Temporal[F].realTime.flatMap { now =>
+      stateRef.update(
+        _.copy(
+          requestedScopes = requested,
+          grantedScopes = resp.grantedScopes,
+          currentToken = Some(resp.access_token),
+          scheme = if resp.token_type.equalsIgnoreCase("DPoP") then "DPoP" else "Bearer",
+          expiresAt = resp.expires_in.map(now.toSeconds + _)
+        )
+      )
     }
 
   private def handleScopeChallenge(err: McpClientError.Http, opName: String): F[Unit] =
-    val challengeScopes = StepUpClient.parseChallengeScopes(err.wwwAuthenticate)
-    if challengeScopes.isEmpty then
-      Concurrent[F].raiseError(err)
+    val challenged = StepUpClient.parseChallengeScopes(err.wwwAuthenticate)
+    if challenged.isEmpty then Temporal[F].raiseError(err)
     else
-      for
-        s <- stateRef.get
-        targetScopes = strategy match
-          case ScopeStrategy.Union =>
-            // THE UNION RULE: requested ∪ challenged
-            s.requestedScopes ++ challengeScopes
-          case ScopeStrategy.Naive =>
-            // THE ANTI-PATTERN: request only the missing scopes
-            challengeScopes -- s.grantedScopes
-        resp <- authorizeFn(targetScopes)
-        // Check for narrower grant
-        withheld = targetScopes -- resp.grantedScopes
-        _ <- if withheld.nonEmpty && strategy == ScopeStrategy.Union then
-          Concurrent[F].raiseError[Unit](
-            StepUpClient.NarrowerGrantException(opName, withheld, resp.grantedScopes)
-          )
-        else
-          stateRef.update { prev =>
-            prev.copy(
-              requestedScopes = targetScopes,
-              grantedScopes = resp.grantedScopes,
-              currentToken = Some(resp.access_token)
-            )
-          }
-      yield ()
+      allowedScopes.map(challenged -- _).filter(_.nonEmpty) match
+        case Some(outside) => Temporal[F].raiseError(StepUpClient.ScopeNotAllowed(opName, outside))
+        case None =>
+          for
+            s <- stateRef.get
+            target = strategy match
+              case ScopeStrategy.Union => s.requestedScopes ++ challenged
+              case ScopeStrategy.Naive => challenged -- s.grantedScopes
+            resp <- authorizeFn(target)
+            withheld = target -- resp.grantedScopes
+            _ <-
+              if withheld.nonEmpty && strategy == ScopeStrategy.Union then
+                Temporal[F].raiseError[Unit](StepUpClient.NarrowerGrantException(opName, withheld, resp.grantedScopes))
+              else hold(resp, target)
+          yield ()
 
-  private def handle401Challenge(err: McpClientError.Http, opName: String): F[Unit] =
-    val _ = (err, opName)
-    for
-      s <- stateRef.get
-      // Re-authorize with the current requested scopes or minimal scopes
-      scopesToRequest = if s.requestedScopes.nonEmpty then s.requestedScopes else Set("openid")
-      resp <- authorizeFn(scopesToRequest)
-      _ <- stateRef.update { prev =>
-        prev.copy(
-          grantedScopes = resp.grantedScopes,
-          currentToken = Some(resp.access_token)
-        )
-      }
-    yield ()
+  /** A `401`: the token was refused (expired, revoked). Get a new one for
+    * the same scopes, or for those the challenge names when none were asked
+    * for yet.
+    */
+  private def reauthorize(err: McpClientError.Http): F[Unit] =
+    stateRef.get.flatMap { s =>
+      val challenged = AuthChallenge.parse(err.wwwAuthenticate).flatMap(_.scopes).toSet
+      val wanted     = if s.requestedScopes.nonEmpty then s.requestedScopes else challenged
+      allowedScopes.map(wanted -- _).filter(_.nonEmpty) match
+        case Some(outside) => Temporal[F].raiseError(StepUpClient.ScopeNotAllowed("re-authorization", outside))
+        case None          => authorizeFn(wanted).flatMap(resp => hold(resp, wanted))
+    }
 
 object StepUpClient:
 
   final case class State(
       requestedScopes: Set[String] = Set.empty,
       grantedScopes: Set[String] = Set.empty,
-      currentToken: Option[String] = None
+      currentToken: Option[String] = None,
+      scheme: String = "Bearer",
+      expiresAt: Option[Long] = None
   )
 
-  final case class NarrowerGrantException(
-      operation: String,
-      withheldScopes: Set[String],
-      grantedScopes: Set[String]
-  ) extends Exception(
+  final case class NarrowerGrantException(operation: String, withheldScopes: Set[String], grantedScopes: Set[String])
+      extends Exception(
         s"Authorization server withheld scopes [${withheldScopes.mkString(" ")}] required for '$operation'. " +
           s"Granted only [${grantedScopes.mkString(" ")}]. Narrower grants cannot be retried automatically."
       )
 
-  private val ScopePattern: Regex = """scope="([^"]*)"""".r
+  final case class ScopeNotAllowed(operation: String, scopes: Set[String])
+      extends Exception(s"the server asked for [${scopes.toList.sorted.mkString(" ")}] for '$operation', outside what this client may request")
 
-  /** Parses scopes from `WWW-Authenticate: Bearer error="insufficient_scope", ..., scope="..."` headers. */
+  /** The scopes of the `insufficient_scope` challenges among `headers`. */
   def parseChallengeScopes(headers: List[String]): Set[String] =
-    headers.flatMap { h =>
-      if h.contains("error=\"insufficient_scope\"") || h.contains("insufficient_scope") then
-        ScopePattern.findFirstMatchIn(h).map(_.group(1).split("\\s+").filter(_.nonEmpty).toSet).getOrElse(Set.empty)
-      else Set.empty
-    }.toSet
+    AuthChallenge.parse(headers).filter(_.error.contains("insufficient_scope")).flatMap(_.scopes).toSet
 
-  /** Creates a StepUpClient with the Scope-Union Rule. */
-  def create[F[_]: Concurrent](
+  /** A client following the Scope-Union Rule. */
+  def create[F[_]: Temporal](
       authorize: Set[String] => F[TokenResponse],
       strategy: ScopeStrategy = ScopeStrategy.Union,
-      maxRetries: Int = 2
+      maxRetries: Int = 2,
+      allowedScopes: Option[Set[String]] = None,
+      renewBefore: FiniteDuration = 30.seconds
   ): F[StepUpClient[F]] =
-    Ref.of[F, State](State()).map(ref => new StepUpClient[F](ref, authorize, strategy, maxRetries))
+    Ref.of[F, State](State()).map(ref => new StepUpClient[F](ref, authorize, strategy, maxRetries, allowedScopes, renewBefore))

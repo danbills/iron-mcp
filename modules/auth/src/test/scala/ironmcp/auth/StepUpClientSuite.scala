@@ -7,7 +7,7 @@ import io.circe.syntax.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 import ironmcp.client.McpClient
-import ironmcp.http.{McpHttpClient, McpHttp}
+import ironmcp.http.McpHttpClient
 import ironmcp.protocol.{CallToolResult, Implementation}
 import ironmcp.schema.JsonSchemaOf
 import ironmcp.server.*
@@ -33,27 +33,15 @@ class StepUpClientSuite extends CatsEffectSuite:
   private val serverUrl = "http://localhost:5302"
   private val mcpResource = s"$serverUrl/mcp"
 
-  private val scopePolicy = ToolScopePolicy.Builder.empty
-    .require("read_summary", "reports:read")
-    .require("export_full_data", "reports:read", "reports:export")
-    .build
-
-  private val metadata = ProtectedResourceMetadata(
-    resource = mcpResource,
-    authorization_servers = List("http://localhost:5301"),
-    scopes_supported = Some(List("reports:read", "reports:export"))
-  )
-
   private val authConfig = McpAuthServer.Config(
-    mcpConfig = McpHttp.Config(path = "/mcp"),
-    serverUrl = serverUrl,
-    metadata = metadata,
-    scopePolicy = scopePolicy
+    ResourceIdentity.unsafe(mcpResource),
+    List("http://localhost:5301"),
+    AuthPolicy.fromTools(readSummary.requires("reports:read"), exportFullData.requires("reports:read", "reports:export"))
   )
 
-  private val validator = TokenValidator.hs256[IO](
+  private val validator = TokenValidator.sharedSecret[IO](
     hmacSecret,
-    TokenValidator.Config(expectedResource = Some(mcpResource))
+    TokenValidator.Config("http://localhost:5301", mcpResource, algorithms = Set(JwsAlgorithm.HS256))
   )
 
   private val server = McpServer[IO](
@@ -65,7 +53,7 @@ class StepUpClientSuite extends CatsEffectSuite:
   private val httpClient = Client.fromHttpApp(serverApp)
 
   private def mintToken(scopes: Set[String]): String =
-    val header = Json.obj("alg" -> "HS256".asJson, "typ" -> "JWT".asJson)
+    val header = Json.obj("alg" -> "HS256".asJson, "typ" -> "at+jwt".asJson)
     val now = System.currentTimeMillis() / 1000
     val payload = Json.obj(
       "iss" -> "http://localhost:5301".asJson,

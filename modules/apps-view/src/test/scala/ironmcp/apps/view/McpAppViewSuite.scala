@@ -351,3 +351,57 @@ class McpAppViewSuite extends CatsEffectSuite:
         }
       }
     }
+
+  private def sessionJson(unlocked: List[String], locked: List[Json]) =
+    Json.obj(
+      "content"           -> Json.arr(),
+      "structuredContent" -> Json.obj("signedIn" -> true.asJson, "subject" -> "alice".asJson, "scopes" -> List("mcp:read").asJson, "unlocked" -> unlocked.asJson, "locked" -> Json.arr(locked*), "keyBound" -> true.asJson)
+    )
+
+  test("ViewAuth: the session comes from whoami; unlock calls the unlocker, then reads the new session"):
+    val locked = ViewSession.Locked("export", List("mcp:export"), Some("unlock_export"))
+    session().use { s =>
+      for
+        _       <- s.host.fromView
+        before  <- ViewAuth.session(s.view).start
+        who1    <- s.host.fromView
+        _       <- s.host.toView(respond(who1, sessionJson(List("read"), List(Json.obj("name" -> "export".asJson, "needs" -> List("mcp:export").asJson, "unlockWith" -> "unlock_export".asJson)))))
+        b       <- before.joinWithNever
+        after   <- ViewAuth.unlock(s.view, locked).start
+        unlock  <- s.host.fromView
+        _       <- s.host.toView(respond(unlock, sessionJson(Nil, Nil)))
+        who2    <- s.host.fromView
+        _       <- s.host.toView(respond(who2, sessionJson(List("export", "read"), Nil)))
+        a       <- after.joinWithNever
+      yield
+        assertEquals(b.lock("export").flatMap(_.unlockWith), Some("unlock_export"))
+        assert(b.keyBound)
+        assertEquals(unlock.hcursor.downField("params").get[String]("name"), Right("unlock_export"))
+        assertEquals(a.map(_.canCall("export")), Right(true))
+    }
+
+  test("ViewAuth: a declined step-up comes back as what is missing"):
+    val locked = ViewSession.Locked("export", List("mcp:export"), Some("unlock_export"))
+    session().use { s =>
+      for
+        _      <- s.host.fromView
+        call   <- ViewAuth.unlock(s.view, locked).start
+        req    <- s.host.fromView
+        _      <- s.host.toView(Json.obj(
+                    "jsonrpc" -> "2.0".asJson,
+                    "id"      -> req.hcursor.downField("id").focus.get,
+                    "error"   -> Json.obj("code" -> (-32603).asJson, "message" -> "HTTP 403: Bearer error=\"insufficient_scope\", scope=\"mcp:export mcp:read\"".asJson)
+                  ))
+        result <- call.joinWithNever
+      yield assertEquals(result.left.toOption, Some(ViewAuth.Outcome.MoreAccessRequired(Set("mcp:export", "mcp:read"))))
+    }
+
+  test("ViewAuth.classify reads the OAuth vocabulary in relayed errors"):
+    def err(code: Int, message: NonEmptyString) = McpAppViewError("tools/call", JsonRpcError(ErrorCode.fromInt(code), message))
+    assertEquals(ViewAuth.classify(err(-32603, "401 Unauthorized")), ViewAuth.Outcome.SignInRequired)
+    assertEquals(ViewAuth.classify(err(-32603, "invalid_token")), ViewAuth.Outcome.SignInRequired)
+    assert(ViewAuth.classify(err(-32603, "disk full")).isInstanceOf[ViewAuth.Outcome.Failed])
+    assertEquals(
+      ViewAuth.classify(CallToolResult(List(ContentBlock.Text("'export' is not permitted for this caller")), isError = Some(true))),
+      Some(ViewAuth.Outcome.Forbidden("'export' is not permitted for this caller"))
+    )

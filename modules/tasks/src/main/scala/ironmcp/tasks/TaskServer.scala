@@ -21,10 +21,12 @@ import ironmcp.tasks.TaskModels.*
   * offloads task-designated tools to background fibers when invoked by task-capable
   * clients, returning `resultType: "task"` immediately.
   *
-  * A task ID is the only thing `tasks/get` and `tasks/cancel` check, so it is
-  * 128 bits from `random` (a [[SecureRandom]]), never the clock or
-  * `scala.util.Random`. The ID is not bound to a caller: over HTTP with several
-  * users, anyone holding an ID can read or cancel that task.
+  * A task ID is 128 bits from `random` (a [[SecureRandom]]), never the clock
+  * or `scala.util.Random`. With several users, also bind tasks to the caller:
+  * build the server per request with `owner` set to who is calling (over HTTP
+  * with authorization, `s"${claims.iss} ${claims.sub}"`), and `tasks/get`,
+  * `tasks/cancel` and `tasks/update` answer only that caller. Without an
+  * owner, anyone holding an ID can read or cancel that task.
   */
 final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
     val underlying: ServerHandler[F],
@@ -32,7 +34,8 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
     random: SecureRandom[F],
     val taskTools: Set[String] = Set.empty,
     val defaultPollIntervalMs: Long = 1000L,
-    val defaultTtlMs: Long = 300000L
+    val defaultTtlMs: Long = 300000L,
+    val owner: Option[String] = None
 ) extends ServerHandler[F]:
 
   def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] =
@@ -87,7 +90,7 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
       case None =>
         Temporal[F].pure(Some(JsonRpcMessage.Failure(Some(id), JsonRpcError(ErrorCode.InvalidParams, "Invalid tasks/get params"))))
       case Some(p) =>
-        store.get(p.taskId).map {
+        store.get(p.taskId, owner).map {
           case Some(snapshot) =>
             Some(JsonRpcMessage.Success(id, snapshot.asJson))
           case None =>
@@ -99,7 +102,7 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
       case None =>
         Temporal[F].pure(Some(JsonRpcMessage.Failure(Some(id), JsonRpcError(ErrorCode.InvalidParams, "Invalid tasks/cancel params"))))
       case Some(p) =>
-        store.cancel(p.taskId).map {
+        store.cancel(p.taskId, owner).map {
           case Some(res) =>
             Some(JsonRpcMessage.Success(id, res.asJson))
           case None =>
@@ -111,7 +114,7 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
       case None =>
         Temporal[F].pure(Some(JsonRpcMessage.Failure(Some(id), JsonRpcError(ErrorCode.InvalidParams, "Invalid tasks/update params"))))
       case Some(p) =>
-        store.update(p.taskId, p.inputResponses).map {
+        store.update(p.taskId, p.inputResponses, owner).map {
           case Some(res) =>
             Some(JsonRpcMessage.Success(id, res.asJson))
           case None =>
@@ -141,7 +144,7 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
             store.fail(taskId, JsonRpcError(ErrorCode.InternalError, msg.assume[Not[Empty]]))
           }
         }
-        createRes <- store.create(taskId, defaultPollIntervalMs, defaultTtlMs, fiber.cancel)
+        createRes <- store.create(taskId, defaultPollIntervalMs, defaultTtlMs, fiber.cancel, owner)
       yield Some(JsonRpcMessage.Success(req.id, createRes.asJson))
     else
       // Plain synchronous execution for non-task tools or non-task clients
@@ -175,6 +178,7 @@ object TaskServer:
       random: SecureRandom[F],
       taskTools: Set[String] = Set.empty,
       defaultPollIntervalMs: Long = 1000L,
-      defaultTtlMs: Long = 300000L
+      defaultTtlMs: Long = 300000L,
+      owner: Option[String] = None
   ): TaskServer[F] =
-    new TaskServer[F](underlying, store, random, taskTools, defaultPollIntervalMs, defaultTtlMs)
+    new TaskServer[F](underlying, store, random, taskTools, defaultPollIntervalMs, defaultTtlMs, owner)
