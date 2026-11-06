@@ -122,6 +122,9 @@ object ClientAuth:
 /** POSTs a form to an OAuth endpoint with the client's credentials, and turns
   * an OAuth error response into [[OAuthError.TokenEndpoint]] instead of a bare
   * status.
+  *
+  * With a DPoP key, the request carries a proof, and a `use_dpop_nonce`
+  * answer (RFC 9449 §8) is retried once with the server's nonce.
   */
 object OAuthEndpoint:
 
@@ -131,25 +134,38 @@ object OAuthEndpoint:
       endpoint: String,
       auth: ClientAuth,
       params: List[(String, String)],
-      extraHeaders: Headers = Headers.empty
+      extraHeaders: Headers = Headers.empty,
+      dpop: Option[Dpop.Key] = None
   ): F[A] =
+    def attempt(uri: Uri, nonce: Option[String]): F[Either[(Option[String], OAuthError), A]] =
+      for
+        (fields, headers) <- auth.credentials[F](issuer, endpoint)
+        proof <- dpop.traverse(_.proof[F]("POST", endpoint, None, nonce))
+        request = Request[F](Method.POST, uri)
+          .withEntity(UrlForm((params ++ fields)*))
+          .withContentType(`Content-Type`(MediaType.application.`x-www-form-urlencoded`))
+          .putHeaders(Accept(MediaType.application.json))
+          .putHeaders(proof.map(p => Header.Raw(Dpop.HeaderName, p)).toList)
+        authed = request.withHeaders(request.headers ++ headers ++ extraHeaders)
+        result <- http.run(authed).use { response =>
+          if response.status.isSuccess then response.as[A].map(Right(_))
+          else
+            response.bodyText.compile.string.map { body =>
+              val json = io.circe.parser.parse(body).toOption
+              val code = json.flatMap(_.hcursor.get[String]("error").toOption)
+              val text = json.flatMap(_.hcursor.get[String]("error_description").toOption)
+              Left((response.headers.get(Dpop.NonceHeader).map(_.head.value), OAuthError.TokenEndpoint(response.status.code, code.getOrElse("unknown"), text)))
+            }
+        }
+      yield result
+
     for
       _   <- ResourceIdentity.requireSecure(endpoint).leftMap(OAuthError.Insecure(_)).liftTo[F]
       uri <- Uri.fromString(endpoint).liftTo[F]
-      (fields, headers) <- auth.credentials[F](issuer, endpoint)
-      request = Request[F](Method.POST, uri)
-        .withEntity(UrlForm((params ++ fields)*))
-        .withContentType(`Content-Type`(MediaType.application.`x-www-form-urlencoded`))
-        .putHeaders(Accept(MediaType.application.json))
-      authed = request.withHeaders(request.headers ++ headers ++ extraHeaders)
-      result <- http.run(authed).use { response =>
-        if response.status.isSuccess then response.as[A]
-        else
-          response.bodyText.compile.string.flatMap { body =>
-            val json = io.circe.parser.parse(body).toOption
-            val code = json.flatMap(_.hcursor.get[String]("error").toOption)
-            val text = json.flatMap(_.hcursor.get[String]("error_description").toOption)
-            Async[F].raiseError(OAuthError.TokenEndpoint(response.status.code, code.getOrElse("unknown"), text))
-          }
-      }
+      first <- attempt(uri, None)
+      result <- first match
+        case Right(a) => Async[F].pure(a)
+        case Left((Some(nonce), OAuthError.TokenEndpoint(_, "use_dpop_nonce", _))) if dpop.isDefined =>
+          attempt(uri, Some(nonce)).flatMap(_.fold(e => Async[F].raiseError(e._2), Async[F].pure))
+        case Left((_, error)) => Async[F].raiseError(error)
     yield result

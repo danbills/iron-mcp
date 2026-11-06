@@ -30,6 +30,12 @@
 | A stolen token used after the user signs out | `RevocationList` (`jti`, `sid`, subject) and RFC 7662 introspection, layered on local checks |
 | The JWKS endpoint is down | `503`, never a pass |
 | "Who did that?" | `AuthAudit`: every decision, with subject, client, target and scopes, never the token; `iron-mcp-otel-auth` turns it into metrics and span events |
+| A token copied from a log, a proxy or a compromised client is replayed | DPoP (RFC 9449): tokens bound to the client's key need a fresh signed proof per request; a bound token sent as Bearer is refused |
+| A captured DPoP proof is replayed | each proof names method, URL and token hash, is good for two minutes, and its `jti` is remembered |
+| A malicious authorization server mixes up the user's sessions | RFC 9207: the redirect's `iss` must match, and is required when the server advertises it |
+| A resource server points the client at its own "metadata" or at plain http | metadata must be on the resource's origin; every URL must be `https` (loopback excepted) |
+| A hostile resource server asks the client for every scope there is | `StepUpClient(allowedScopes = ...)` refuses challenges outside the set |
+| A shared client secret leaks | `ClientAuth.PrivateKeyJwt`: a one-minute signed assertion instead; secrets are never sent to a server that does not list the method |
 
 ---
 
@@ -43,6 +49,7 @@ import ironmcp.auth.*
 import ironmcp.protocol.Implementation
 import ironmcp.schema.JsonSchemaOf
 import ironmcp.server.*
+import cats.effect.std.SecureRandom
 import org.http4s.Uri
 import org.http4s.client.Client
 
@@ -180,35 +187,132 @@ def audited(validator: TokenValidator[IO]) =
 
 ---
 
-## 7. Keycloak
+## 7. DPoP: tokens a thief cannot use
 
-Keycloak does not act on the RFC 8707 `resource` parameter. A token's `aud` comes from the realm's **Audience mappers**, so give each MCP client scope one that adds the MCP resource URI, as the `iron-mcp` realm file in `modules/auth/keycloak/` does. Then Keycloak's tokens validate like any other issuer's: `TokenValidator.Config(issuer, resource)` with the realm URL as issuer, and the default profile accepts Keycloak's `typ: Bearer` while refusing its ID and refresh tokens.
+A Bearer token works for whoever holds it. A DPoP-bound token (RFC 9449) carries the thumbprint of the client's public key (`cnf.jkt`), and every request must come with a fresh **proof**: a small JWT signed with the private key, naming the method, the URL and a hash of the token. A copied token is useless without the key, and a captured proof is useless for any other request.
+
+On the server, it is one setting:
+
+```scala mdoc:silent
+val dpopOnly = McpAuthServer.Config(resource, List(issuer), policy, dpop = DpopPolicy.Required)
+```
+
+| Policy | Unbound Bearer token | Bound token as Bearer | Bound token with valid proof |
+| :--- | :--- | :--- | :--- |
+| `Allowed` (default) | accepted | **refused** | accepted |
+| `Required` | refused, `WWW-Authenticate: DPoP algs="…"` | refused | accepted |
+
+The metadata advertises `dpop_signing_alg_values_supported`, and `dpop_bound_access_tokens_required` under `Required`. Proofs are checked for type, algorithm, a public `jwk` whose key made the signature, `htm`, `htu` (the resource's public URL), `iat` within two minutes, `ath`, and a `jti` not seen before (`ReplayCache`; in memory by default, `McpAuthServer.Hooks` takes a shared one for several replicas).
+
+On the client, a `Dpop.Key` binds the tokens and signs the proofs:
+
+```scala mdoc:silent
+def dpopClient(http: Client[IO]) =
+  for
+    key    <- Dpop.Key.generate[IO]
+    random <- SecureRandom.javaSecuritySecureRandom[IO]
+    oauth   = OAuthClient[IO](http, random, trusted = Set(issuer), dpop = Some(key))
+    signed <- Dpop.client[IO](http, key) // adds a proof to every `Authorization: DPoP` request
+  yield (oauth, signed)
+```
+
+`OAuthClient` sends `dpop_jkt` with the authorization request and a proof with each token request (retrying once on `use_dpop_nonce`). `StepUpClient` sends a `token_type: DPoP` token as `Authorization: DPoP`. Give `signed` to `McpHttpClient.transport`.
 
 ---
 
-## 8. The client: discovery, PKCE, refresh, step-up
+## 8. Machines and enterprises: the `ext-auth` extensions
+
+### OAuth Client Credentials
+
+A machine client, registered out of band, gets its own tokens. It authenticates with a signed assertion rather than a secret:
+
+```scala mdoc:silent
+def machine(http: Client[IO], server: AuthorizationServerMetadata, key: java.security.PrivateKey) =
+  for
+    authorize <- IO.fromEither(ClientCredentials.authorizer[IO](http, server, ClientAuth.PrivateKeyJwt("reports-bot", key, keyId = Some("bot-2026")), resource.resource))
+    stepUp    <- StepUpClient.create[IO](authorize, allowedScopes = Some(Set("mcp:read", "mcp:export")))
+  yield stepUp
+```
+
+Before anything is sent, the authorization server must list `private_key_jwt` and the key's algorithm (the extension's MUSTs). The assertion lives one minute, names the issuer as its audience, and carries a random `jti`.
+
+### Enterprise-Managed Authorization
+
+The user signs in once to the company IdP, and the IdP's administrators decide which MCP servers each user and client may reach:
+
+1. **Token exchange at the IdP** (RFC 8693): the user's ID token for an ID-JAG addressed to the MCP server's authorization server, naming the MCP resource.
+2. **JWT-bearer grant at that authorization server** (RFC 7523): the ID-JAG for an access token bound to the MCP resource.
+
+```scala mdoc:silent
+def enterprise(http: Client[IO], server: AuthorizationServerMetadata, idToken: IO[String]) =
+  val config = EnterpriseAuth.Config(
+    idpIssuer = "https://login.example.com",
+    idpTokenEndpoint = "https://login.example.com/oauth2/token",
+    idpClient = ClientAuth.SecretPost("desktop-app", sys.env("IDP_SECRET")),
+    authorizationServer = server,
+    asClient = ClientAuth.Public("https://desktop.example.com/client.json"), // a Client ID Metadata Document
+    resource = resource.resource
+  )
+  StepUpClient.create[IO](EnterpriseAuth.authorizer[IO](http, config, idToken.map(EnterpriseAuth.Subject.IdToken(_))))
+```
+
+The MCP server needs nothing new: the access token is an ordinary one. A Scala authorization server can check incoming ID-JAGs with `EnterpriseAuth.verifyIdJag` (type `oauth-id-jag+jwt`, a trusted IdP, `aud` its own issuer, `client_id` the authenticated client, `resource` one it serves, single use).
+
+Keycloak 26.7 does not issue ID-JAGs or advertise the grant profile, so this flow is tested against an in-memory IdP and authorization server (`EnterpriseSuite`).
+
+### Client ID Metadata Documents
+
+A client can publish its registration at an `https` URL that is its `client_id`, so authorization servers that support it need no registration step and no shared secret. `ClientMetadataDocument(...).validate` refuses shared-secret methods and non-https IDs, `ClientMetadataDocument.routes` serves it, and `OAuthClient.clientId` uses it only where the server advertises `client_id_metadata_document_supported`.
+
+---
+
+## 9. Keycloak
+
+Keycloak does not act on the RFC 8707 `resource` parameter. A token's `aud` comes from the realm's **Audience mappers**, so each MCP client scope has one that adds the MCP resource URI. Then Keycloak's tokens validate like any other issuer's: `TokenValidator.Config(issuer, resource)` with the realm URL as issuer, and the default profile accepts Keycloak's `typ: Bearer` while refusing its ID and refresh tokens.
+
+The `iron-mcp` realm is code: `modules/auth/keycloak/iron-mcp-realm.json`, applied with
+
+```bash
+KC_URL=https://danarch.tail09c16c.ts.net:10000 KC_ADMIN_USER=admin KC_ADMIN_PASSWORD=… \
+MCP_RESOURCE=https://reports.example.com/mcp scripts/keycloak-realm.sh --test-user alice
+```
+
+It creates the realm (ES256 signing keys, 5-minute access tokens, refresh token rotation, brute-force protection, events on), the `mcp:read`, `mcp:export` and `mcp:admin` scopes with their audience mappers, and four clients:
+
+| Client | For | How it authenticates |
+| :--- | :--- | :--- |
+| `iron-mcp-public` | users signing in through an MCP client | public, PKCE S256, loopback redirects, consent, DPoP-bound tokens |
+| `iron-mcp-machine` | the Client Credentials extension | `private_key_jwt` (ES256), DPoP-bound tokens |
+| `iron-mcp-ci` | `KeycloakIntegrationSuite` | client secret, printed once by the script |
+| `iron-mcp-introspector` | the MCP server's RFC 7662 calls | client secret |
+
+No secret is in the repository. The script prints the `IRON_MCP_KC_*` lines that turn on the live suite.
+
+---
+
+## 10. The client: discovery, PKCE, refresh, step-up
 
 `OAuthClient` is the client side, from the first `401` to a token:
 
-1. **Discovery.** `discover(rejection, resource)` reads `resource_metadata` from the challenge, fetches the RFC 9728 document, checks it names the resource that was called, then fetches the authorization server's RFC 8414 metadata (or OpenID configuration) and checks its `issuer`.
+1. **Discovery.** `discover(rejection, resource)` reads `resource_metadata` from the challenge (which must be on the resource's origin), fetches the RFC 9728 document, checks it names the resource that was called, then fetches the authorization server's RFC 8414 metadata (or OpenID configuration) and checks its `issuer`. Every URL must be `https`, loopback excepted.
 2. **Trust.** Only an authorization server on the client's allowlist is ever contacted. The resource server names it, and a client that follows any name can be sent to an attacker (the class of bug in GHSA-6qxp-vccf-f47h).
-3. **Authorization code with PKCE S256.** A server that does not advertise `S256` is refused before the user is sent anywhere. Every request carries the RFC 8707 `resource`, and the redirect's `state` must match.
+3. **Authorization code with PKCE S256.** A server that does not advertise `S256` is refused before the user is sent anywhere. Every request carries the RFC 8707 `resource`. The redirect's `state` must match, and its `iss` too (RFC 9207) whenever the server says it sends one.
 4. **Refresh.** `authorizer` refreshes when the requested scopes are already granted. A refresh cannot widen a grant, so a step-up goes back to the user.
 
 `authorizer` has exactly the shape `StepUpClient.create` takes:
 
 ```scala mdoc:silent
-import cats.effect.std.SecureRandom
-
 def connect(http: Client[IO], rejection: ironmcp.client.McpClientError.Http, openBrowser: Uri => IO[AuthorizationResponse]) =
   for
     random    <- SecureRandom.javaSecuritySecureRandom[IO]
     oauth      = OAuthClient[IO](http, random, trusted = Set(issuer))
     found     <- oauth.discover(rejection, resource = resource.resource)
-    authorize <- oauth.authorizer(found, clientId = "iron-mcp-public", redirectUri = "http://127.0.0.1:7777/callback", openBrowser)
-    stepUp    <- StepUpClient.create[IO](authorize)
+    authorize <- oauth.authorizer(found, ClientAuth.Public("iron-mcp-public"), redirectUri = "http://127.0.0.1:7777/callback", openBrowser)
+    stepUp    <- StepUpClient.create[IO](authorize, allowedScopes = Some(Set("mcp:read", "mcp:export")))
   yield stepUp
 ```
+
+`openBrowser` opens the URL and returns what the redirect brought back; `AuthorizationResponse.fromRedirect(uri)` reads `code`, `state` and `iss` from it.
 
 ### The Scope-Union Rule (SEP-2350)
 
@@ -220,4 +324,4 @@ Asking for the missing scope alone (`ScopeStrategy.Naive`) replaces the token wi
 
 ![Naive Anti-Pattern](../images/naive_antipattern.svg)
 
-If the authorization server grants less than was asked (the user or a policy declined), `StepUpClient` stops with `NarrowerGrantException` instead of looping.
+If the authorization server grants less than was asked (the user or a policy declined), `StepUpClient` stops with `NarrowerGrantException` instead of looping. With `allowedScopes`, a challenge naming anything else is refused (`ScopeNotAllowed`), so a hostile server cannot widen what the client asks for. A token about to expire is renewed before it is sent.

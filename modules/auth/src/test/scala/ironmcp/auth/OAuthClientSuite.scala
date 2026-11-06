@@ -16,17 +16,19 @@ import org.http4s.dsl.io.*
   */
 class OAuthClientSuite extends CatsEffectSuite:
 
-  private val resource = "http://mcp.local/mcp"
-  private val issuer   = "http://as.local/realms/mcp"
-  private val prmUrl   = "http://mcp.local/.well-known/oauth-protected-resource/mcp"
+  private val resource = "http://mcp.localhost/mcp"
+  private val issuer   = "http://as.localhost/realms/mcp"
+  private val prmUrl   = "http://mcp.localhost/.well-known/oauth-protected-resource/mcp"
   private val redirect = "http://127.0.0.1:7777/callback"
 
-  private def asMetadata(issuerName: String, pkce: Option[List[String]] = Some(List("S256"))) =
+  private def asMetadata(issuerName: String, pkce: Option[List[String]] = Some(List("S256")), iss: Option[Boolean] = None) =
     AuthorizationServerMetadata(
       issuer = issuerName,
       authorization_endpoint = Some(s"$issuer/protocol/openid-connect/auth"),
       token_endpoint = s"$issuer/protocol/openid-connect/token",
-      code_challenge_methods_supported = pkce
+      code_challenge_methods_supported = pkce,
+      token_endpoint_auth_methods_supported = Some(List("none", "private_key_jwt")),
+      authorization_response_iss_parameter_supported = iss
     )
 
   /** What the fake authorization server saw. */
@@ -80,14 +82,14 @@ class OAuthClientSuite extends CatsEffectSuite:
     * authorization server would keep, and redirects back with a code that
     * carries the requested scopes.
     */
-  private def approve(seen: Ref[IO, Seen], tamperState: Boolean = false): Uri => IO[AuthorizationResponse] = uri =>
+  private def approve(seen: Ref[IO, Seen], tamperState: Boolean = false, iss: Option[String] = None): Uri => IO[AuthorizationResponse] = uri =>
     val q = uri.query.params
     assertEquals(q.get("code_challenge_method"), Some("S256"))
     assertEquals(q.get("resource"), Some(resource))
     assertEquals(q.get("redirect_uri"), Some(redirect))
     val code = s"code:${q.getOrElse("scope", "")}"
     seen.update(s => s.copy(challenges = s.challenges.updated(code, q("code_challenge")))).as(
-      AuthorizationResponse(code, if tamperState then "forged" else q("state"))
+      AuthorizationResponse(code, if tamperState then "forged" else q("state"), iss)
     )
 
   test("PKCE S256 matches the RFC 7636 appendix B vector"):
@@ -111,21 +113,21 @@ class OAuthClientSuite extends CatsEffectSuite:
 
   test("metadata describing a different resource is refused"):
     for
-      (http, _) <- world(advertisedResource = "http://evil.local/mcp")
+      (http, _) <- world(advertisedResource = "http://evil.localhost/mcp")
       client    <- oauth(http)
       result    <- client.discover(unauthorized, resource).attempt
     yield assert(result.left.exists(_.isInstanceOf[OAuthError.ResourceMismatch]), result.toString)
 
   test("an authorization server the client does not trust is never contacted"):
     for
-      (http, _) <- world(servers = List("http://attacker.local"))
+      (http, _) <- world(servers = List("http://attacker.localhost"))
       client    <- oauth(http)
       result    <- client.discover(unauthorized, resource).attempt
     yield assert(result.left.exists(_.isInstanceOf[OAuthError.UntrustedAuthorizationServer]), result.toString)
 
   test("metadata that names another issuer is refused"):
     for
-      (http, _) <- world(metadata = asMetadata("http://as.local/realms/other"))
+      (http, _) <- world(metadata = asMetadata("http://as.localhost/realms/other"))
       client    <- oauth(http)
       result    <- client.discover(unauthorized, resource).attempt
     yield assert(result.left.exists(_.isInstanceOf[OAuthError.IssuerMismatch]), result.toString)
@@ -135,7 +137,7 @@ class OAuthClientSuite extends CatsEffectSuite:
       (http, _) <- world(metadata = asMetadata(issuer, pkce = None))
       client    <- oauth(http)
       found     <- client.discover(unauthorized, resource)
-      result    <- client.authorizationRequest(found, "mcp-client", redirect, Set("reports:read")).attempt
+      result    <- client.authorizationRequest(found, ClientAuth.Public("mcp-client"), redirect, Set("reports:read")).attempt
     yield assert(result.left.exists(_.isInstanceOf[OAuthError.PkceUnsupported]), result.toString)
 
   test("the authorizer runs the code flow, refreshes within the grant, and re-authorizes to widen it"):
@@ -143,7 +145,7 @@ class OAuthClientSuite extends CatsEffectSuite:
       (http, seen) <- world()
       client       <- oauth(http)
       found        <- client.discover(unauthorized, resource)
-      authorize    <- client.authorizer(found, "mcp-client", redirect, approve(seen))
+      authorize    <- client.authorizer(found, ClientAuth.Public("mcp-client"), redirect, approve(seen))
       first        <- authorize(Set("reports:read"))
       again        <- authorize(Set("reports:read"))
       wider        <- authorize(Set("reports:read", "reports:export"))
@@ -161,7 +163,7 @@ class OAuthClientSuite extends CatsEffectSuite:
       (http, seen) <- world()
       client       <- oauth(http)
       found        <- client.discover(unauthorized, resource)
-      authorize    <- client.authorizer(found, "mcp-client", redirect, approve(seen))
+      authorize    <- client.authorizer(found, ClientAuth.Public("mcp-client"), redirect, approve(seen))
       stepUp       <- StepUpClient.create[IO](authorize)
       _            <- stepUp.initialAuthorize(Set("reports:read"))
       attempts     <- Ref.of[IO, Int](0)
@@ -181,6 +183,79 @@ class OAuthClientSuite extends CatsEffectSuite:
       (http, seen) <- world()
       client       <- oauth(http)
       found        <- client.discover(unauthorized, resource)
-      authorize    <- client.authorizer(found, "mcp-client", redirect, approve(seen, tamperState = true))
+      authorize    <- client.authorizer(found, ClientAuth.Public("mcp-client"), redirect, approve(seen, tamperState = true))
       result       <- authorize(Set("reports:read")).attempt
     yield assertEquals(result, Left(OAuthError.StateMismatch))
+
+  test("RFC 9207: a redirect from another issuer is refused (mix-up defence)"):
+    for
+      (http, seen) <- world(metadata = asMetadata(issuer, iss = Some(true)))
+      client       <- oauth(http)
+      found        <- client.discover(unauthorized, resource)
+      wrong        <- client.authorizer(found, ClientAuth.Public("mcp-client"), redirect, approve(seen, iss = Some("http://attacker.localhost")))
+      missing      <- client.authorizer(found, ClientAuth.Public("mcp-client"), redirect, approve(seen))
+      right        <- client.authorizer(found, ClientAuth.Public("mcp-client"), redirect, approve(seen, iss = Some(issuer)))
+      r1           <- wrong(Set("reports:read")).attempt
+      r2           <- missing(Set("reports:read")).attempt
+      r3           <- right(Set("reports:read")).attempt
+    yield
+      assert(r1.left.exists(_.isInstanceOf[OAuthError.MixUp]), r1.toString)
+      assert(r2.left.exists(_.isInstanceOf[OAuthError.MixUp]), r2.toString)
+      assert(r3.isRight, r3.toString)
+
+  test("resource_metadata on another origin is refused"):
+    val elsewhere = McpClientError.Http(401, List("""Bearer resource_metadata="http://evil.localhost/.well-known/oauth-protected-resource/mcp""""), "")
+    for
+      (http, _) <- world()
+      client    <- oauth(http)
+      result    <- client.discover(elsewhere, resource).attempt
+    yield assert(result.left.exists(_.isInstanceOf[OAuthError.NoResourceMetadata]), result.toString)
+
+  test("plain http off loopback is refused before anything is fetched"):
+    for
+      (http, _) <- world()
+      client    <- oauth(http)
+      result    <- client.discoverFrom("http://mcp.example.com/.well-known/oauth-protected-resource/mcp", "http://mcp.example.com/mcp").attempt
+    yield assert(result.left.exists(_.isInstanceOf[OAuthError.Insecure]), result.toString)
+
+  test("a client secret is not sent to a server that does not list the method"):
+    for
+      (http, seen) <- world()
+      client       <- oauth(http)
+      found        <- client.discover(unauthorized, resource)
+      result       <- client.exchangeCode(found, ClientAuth.SecretPost("c", "s"), redirect, "code:x", "v").attempt
+      after        <- seen.get
+    yield
+      assert(result.left.exists(_.isInstanceOf[OAuthError.ClientAuthUnsupported]), result.toString)
+      assertEquals(after.resources, Nil)
+
+  test("with a DPoP key, the authorization request carries dpop_jkt"):
+    for
+      (http, _) <- world()
+      random    <- SecureRandom.javaSecuritySecureRandom[IO]
+      key       <- Dpop.Key.generate[IO]
+      client     = OAuthClient[IO](http, random, Set(issuer), Some(key))
+      found     <- client.discover(unauthorized, resource)
+      (uri, _, _) <- client.authorizationRequest(found, ClientAuth.Public("mcp-client"), redirect, Set("reports:read"))
+    yield assertEquals(uri.query.params.get("dpop_jkt"), Some(key.thumbprint))
+
+  test("Client ID Metadata Documents are used only where the server accepts them"):
+    for
+      (http, _) <- world()
+      client    <- oauth(http)
+      found     <- client.discover(unauthorized, resource)
+      cimd       = found.copy(authorizationServer = found.authorizationServer.copy(client_id_metadata_document_supported = Some(true)))
+    yield
+      assertEquals(client.clientId(found, Some("registered"), Some("https://app.example/client.json")), Some("registered"))
+      assertEquals(client.clientId(cimd, Some("registered"), Some("https://app.example/client.json")), Some("https://app.example/client.json"))
+      assert(ClientMetadataDocument("https://app.example/client.json", "App", List("http://127.0.0.1/cb")).validate.isRight)
+      assert(ClientMetadataDocument("http://app.example/client.json", "App", List("http://127.0.0.1/cb")).validate.isLeft)
+      assert(ClientMetadataDocument("https://app.example/c.json", "App", List("x"), token_endpoint_auth_method = "client_secret_post").validate.isLeft)
+
+  test("StepUpClient refuses a challenge for scopes outside allowedScopes"):
+    val greedy = McpClientError.Http(403, List("""Bearer error="insufficient_scope", scope="reports:read admin:everything""""), "")
+    for
+      stepUp <- StepUpClient.create[IO](s => IO.pure(TokenResponse("t", "Bearer", None, None, Some(s.mkString(" ")))), allowedScopes = Some(Set("reports:read", "reports:export")))
+      _      <- stepUp.initialAuthorize(Set("reports:read"))
+      result <- stepUp.executeWithRetry(IO.raiseError[String](greedy), "x", 1).attempt
+    yield assert(result.left.exists(_.isInstanceOf[StepUpClient.ScopeNotAllowed]), result.toString)

@@ -259,23 +259,32 @@ object JwksProvider:
       for
         now   <- F.realTime.map(_.toMillis)
         state <- cache.get
-        known = state.keys.exists(ks => kid.forall(ks.contains))
-        fresh = now < state.expiresAt
-        cooling = now - state.lastFetchAt < settings.minRefetchInterval.toMillis
         keys <-
-          if known && fresh then F.pure(state.keys)
-          else if cooling then F.pure(state.keys) // stale or unknown, but fetched moments ago
-          else refresh(now).map(_.orElse(state.keys))
+          if settled(state, kid, now) then F.pure(state.keys)
+          else refresh(now, kid).map(_.orElse(state.keys))
       yield keys match
         case None     => Left(AuthError.KeysUnavailable(s"no keys from $uri"))
         case Some(ks) => ks.select(kid, alg).leftMap(miss(kid))
 
-    /** One fetch at a time; everyone else waits for it. `None` if it failed. */
-    private def refresh(now: Long): F[Option[KeySet]] =
+    /** No fetch is needed: the key is known and fresh, or the last fetch was
+      * moments ago (so an unknown or stale key waits for the cooldown).
+      */
+    private def settled(c: Cache[F], kid: Option[String], now: Long): Boolean =
+      val known   = c.keys.exists(ks => kid.forall(ks.contains))
+      val fresh   = now < c.expiresAt
+      val cooling = now - c.lastFetchAt < settings.minRefetchInterval.toMillis
+      (known && fresh) || cooling
+
+    /** One fetch at a time; everyone else waits for it, and a lookup that
+      * finds the cache settled by a fetch that just finished uses it. `None`
+      * if the fetch failed.
+      */
+    private def refresh(now: Long, kid: Option[String]): F[Option[KeySet]] =
       Deferred[F, Either[Throwable, KeySet]].flatMap { mine =>
         cache
           .modify {
             case c @ Cache(_, _, _, Some(running)) => (c, running.get)
+            case c if settled(c, kid, now)         => (c, F.pure(c.keys.toRight(new RuntimeException("no keys"))))
             case c =>
               val fetchAndStore = fetch.attempt.flatTap {
                 case Right((keys, ttl)) => cache.set(Cache(Some(keys), now + ttl.toMillis, now, None))

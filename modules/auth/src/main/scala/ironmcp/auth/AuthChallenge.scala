@@ -76,9 +76,9 @@ object AuthChallenge:
             case _                                                                       => errorParams
           AuthChallenge(scheme, (errs ++ common ++ algs).toMap).render
         }
-        challenges.foldLeft(
-          Response[F](status).withEntity(body(error)).withContentType(`Content-Type`(MediaType.application.json))
-        )((r, c) => r.putHeaders(Header.Raw(HeaderName, c)))
+        val response = Response[F](status).withEntity(body(error)).withContentType(`Content-Type`(MediaType.application.json))
+        // One header per challenge; putHeaders would keep only the last.
+        response.withHeaders(Headers(response.headers.headers ++ challenges.map(c => Header.Raw(HeaderName, c))))
 
   /** `403 insufficient_scope`, naming every scope the request needs (not just
     * the missing ones), so a client can ask for exactly that set (SEP-2350).

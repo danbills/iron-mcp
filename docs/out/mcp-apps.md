@@ -159,7 +159,7 @@ The protocol underneath is small, so a hand-written View works too:
 
 ## App-only is a host convention, not access control
 
-`Visibility.App` tells an Apps-capable host to keep the tool away from the model. The server still lists the tool to every client and runs it for anyone who calls it, and a client without Apps support ignores the metadata entirely. That is fine for a read-only refresh. A tool that does something consequential needs its own authorization at execution, whatever its visibility (see `ScopedTools` and the per-tool scope policy in the OAuth guide).
+`Visibility.App` tells an Apps-capable host to keep the tool away from the model. The server still lists the tool to every client and runs it for anyone who calls it, and a client without Apps support ignores the metadata entirely. That is fine for a read-only refresh. A tool that does something consequential needs its own authorization at execution, whatever its visibility (declare it with `.requires(...)` and see `AuthPolicy` in the authorization guide).
 
 ## Knowing the client
 
