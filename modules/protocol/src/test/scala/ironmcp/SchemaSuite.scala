@@ -114,6 +114,16 @@ class AnnotationSchemaSuite extends munit.FunSuite:
       label: String :| (Titled["Label"] & Default["none"])
   ) derives JsonSchemaOf
 
+  final case class Tune(
+      abc: Option[String :| (Default["X:1\nK:C\tC D \"E\" \\ F"] DescribedAs "ABC notation:\nrendered, then played.")] = None
+  ) derives JsonSchemaOf
+
+  test("a default or description with newlines, tabs, quotes and backslashes keeps every keyword"):
+    val tune = summon[JsonSchemaOf[Tune]].schema.hcursor.downField("properties").downField("abc")
+    assertEquals(tune.get[String]("default"), Right("X:1\nK:C\tC D \"E\" \\ F"))
+    assertEquals(tune.get[String]("description"), Right("ABC notation:\nrendered, then played."))
+    assertEquals(tune.get[String]("type"), Right("string"))
+
   test("Format, Default and Titled add their keywords and nothing else"):
     val props = summon[JsonSchemaOf[Search]].schema.hcursor.downField("properties")
     assertEquals(props.downField("checkIn").get[String]("format"), Right("date"))

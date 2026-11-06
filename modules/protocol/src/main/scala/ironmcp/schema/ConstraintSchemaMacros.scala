@@ -104,7 +104,7 @@ private[schema] object ConstraintSchemaMacros:
     tpe.dealias match
       case ConstantType(constant) =>
         constant.value match
-          case value: String  => Some("\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
+          case value: String  => Some(jsonString(value))
           case value: Int     => Some(value.toString)
           case value: Long    => Some(value.toString)
           case value: Short   => Some(value.toString)
@@ -114,6 +114,25 @@ private[schema] object ConstraintSchemaMacros:
           case value: Boolean => Some(value.toString)
           case _              => None
       case _ => None
+
+  /** A JSON string literal: quotes, backslashes and control characters
+    * escaped. A raw newline in a description or a default would otherwise make
+    * the keywords unparseable, and the field would silently lose them all.
+    */
+  private def jsonString(value: String): String =
+    val out = StringBuilder("\"")
+    value.foreach {
+      case '"'          => out.append("\\\"")
+      case '\\'         => out.append("\\\\")
+      case '\n'         => out.append("\\n")
+      case '\r'         => out.append("\\r")
+      case '\t'         => out.append("\\t")
+      case '\b'         => out.append("\\b")
+      case '\f'         => out.append("\\f")
+      case c if c < ' ' => out.append(f"\\u${c.toInt}%04x")
+      case c            => out.append(c)
+    }
+    out.append('"').toString
 
   private def asLength(keywords: List[(String, String)]): List[(String, String)] =
     keywords.flatMap {
