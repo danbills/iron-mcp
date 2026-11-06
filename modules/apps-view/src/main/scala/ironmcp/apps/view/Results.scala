@@ -1,7 +1,7 @@
 package ironmcp.apps.view
 
 import io.circe.{Decoder, DecodingFailure, Json, JsonObject}
-import ironmcp.protocol.{CallToolResult, ContentBlock, ReadResourceResult}
+import ironmcp.protocol.{CallToolResult, ContentBlock, ListResourcesResult, ReadResourceResult}
 
 extension (result: CallToolResult)
   /** `structuredContent` decoded as `A`. The data is untrusted (it came
@@ -36,6 +36,15 @@ private[view] object Lenient:
       "ttlMs"      -> Json.fromLong(0L),
       "cacheScope" -> Json.fromString("private")
     ).as[ReadResourceResult]
+
+  def listResourcesResult(json: Json): Decoder.Result[ListResourcesResult] =
+    withDefaults(
+      json,
+      "resources"  -> Json.arr(),
+      "resultType" -> Json.fromString("complete"),
+      "ttlMs"      -> Json.fromLong(0L),
+      "cacheScope" -> Json.fromString("private")
+    ).as[ListResourcesResult]
 
   private def withDefaults(json: Json, defaults: (String, Json)*): Json =
     json.mapObject(obj => defaults.foldLeft(obj)((acc, field) => if acc.contains(field._1) then acc else acc.add(field._1, field._2)))

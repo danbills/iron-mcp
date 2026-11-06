@@ -6,6 +6,7 @@ import io.circe.parser.parse
 import io.circe.syntax.*
 import io.github.iltotore.iron.autoRefine
 import ironmcp.protocol.*
+import ironmcp.schema.JsonSchemaOf
 import munit.CatsEffectSuite
 
 import scala.concurrent.duration.*
@@ -36,7 +37,7 @@ class McpAppViewSuite extends CatsEffectSuite:
   private final case class Session(host: HostPort.InMemory[IO], view: McpAppView[IO], initialize: Json)
 
   /** Connects a View, answering its `ui/initialize` as the host. */
-  private def session(onTeardown: IO[Unit] = IO.unit): Resource[IO, Session] =
+  private def session(onTeardown: IO[Unit] = IO.unit, tools: Option[ViewToolProvider[IO]] = None): Resource[IO, Session] =
     for
       host <- Resource.eval(HostPort.inMemory[IO])
       init <- Resource.eval(IO.deferred[Json])
@@ -45,7 +46,7 @@ class McpAppViewSuite extends CatsEffectSuite:
              _       <- init.complete(request)
              _       <- host.toView(Json.obj("jsonrpc" -> "2.0".asJson, "id" -> request.hcursor.downField("id").focus.get, "result" -> initResult))
            yield ()).background
-      view    <- McpAppView.connect[IO](appInfo, host.port, onTeardown = onTeardown)
+      view    <- McpAppView.connect[IO](appInfo, host.port, onTeardown = onTeardown, tools = tools)
       request <- Resource.eval(init.get)
     yield Session(host, view, request)
 
@@ -230,3 +231,123 @@ class McpAppViewSuite extends CatsEffectSuite:
     assert(result.structuredAs[Health].isLeft)
     assert(CallToolResult.text("x").structuredAs[Health].isLeft)
     assertEquals(CallToolResult.structured("x", Json.obj("healthy" -> 3.asJson)).structuredAs[Health], Right(Health(3)))
+
+  private final case class NoArgs() derives Decoder, JsonSchemaOf
+  private final case class SetAllocation(categoryId: String, percent: Double) derives Decoder, JsonSchemaOf
+  private final case class Allocation(categoryId: String, percent: Double) derives Codec.AsObject, JsonSchemaOf
+
+  private def hostRequest(id: Int, method: String, params: Json): Json =
+    Json.obj("jsonrpc" -> "2.0".asJson, "id" -> id.asJson, "method" -> method.asJson, "params" -> params)
+
+  private def call(id: Int, name: String, arguments: Json = Json.obj()): Json =
+    hostRequest(id, "tools/call", Json.obj("name" -> name.asJson, "arguments" -> arguments))
+
+  private def errorCode(reply: Json): Option[Int] = reply.hcursor.downField("error").get[Int]("code").toOption
+
+  test("View tools: declared, listed, called with decoded arguments; failures are isError, unknown and disabled are -32602"):
+    ViewTools
+      .of[IO](
+        ViewTool[SetAllocation]("set-allocation", "Sets one category's share.")(args => IO.pure(Allocation(args.categoryId, args.percent))),
+        ViewTool[NoArgs]("boom", "Always fails.")(_ => IO.raiseError[String](RuntimeException("nope")))
+      )
+      .flatMap { tools =>
+        session(tools = Some(tools)).use { s =>
+          for
+            _       <- s.host.fromView
+            _       <- s.host.toView(hostRequest(1, "tools/list", Json.obj()))
+            listed  <- s.host.fromView
+            _       <- s.host.toView(call(2, "set-allocation", Json.obj("categoryId" -> "rd".asJson, "percent" -> 30.asJson)))
+            called  <- s.host.fromView
+            _       <- s.host.toView(call(3, "set-allocation", Json.obj("percent" -> "lots".asJson)))
+            invalid <- s.host.fromView
+            _       <- s.host.toView(call(4, "boom"))
+            failed  <- s.host.fromView
+            _       <- s.host.toView(call(5, "missing"))
+            missing <- s.host.fromView
+            _       <- tools.disable("boom")
+            changed <- s.host.fromView
+            _       <- s.host.toView(call(6, "boom"))
+            hidden  <- s.host.fromView
+          yield
+            val declared = s.initialize.hcursor.downField("params").downField("appCapabilities").downField("tools")
+            assertEquals(declared.get[Boolean]("listChanged"), Right(true))
+            val defs = listed.hcursor.downField("result").get[List[Json]]("tools").toOption.get
+            assertEquals(defs.flatMap(_.hcursor.get[String]("name").toOption), List("set-allocation", "boom"))
+            val first = defs.head.hcursor
+            assertEquals(first.downField("inputSchema").downField("properties").keys.map(_.toList), Some(List("categoryId", "percent")))
+            assert(first.downField("outputSchema").succeeded, "a structured output declares its schema")
+            val result = called.hcursor.downField("result")
+            assertEquals(result.downField("structuredContent").focus, Some(Json.obj("categoryId" -> "rd".asJson, "percent" -> 30.0.asJson)))
+            assert(!result.downField("resultType").succeeded, "MCP's CallToolResult, without 2026 result fields")
+            assertEquals(invalid.hcursor.downField("result").get[Boolean]("isError"), Right(true))
+            assertEquals(failed.hcursor.downField("result").get[Boolean]("isError"), Right(true))
+            assert(failed.hcursor.downField("result").downField("content").downArray.get[String]("text").exists(_.contains("nope")))
+            assertEquals(errorCode(missing), Some(-32602))
+            assertEquals(method(changed), Some("notifications/tools/list_changed"))
+            assertEquals(errorCode(hidden), Some(-32602))
+        }
+      }
+
+  test("a tool result's structured content keeps its nulls"):
+    final case class Info(code: Option[String], height: Int) derives Encoder.AsObject, JsonSchemaOf
+    val tool = ViewTool[NoArgs]("get-scene-info", "Scene info.")(_ =>
+      IO.pure(CallToolResult(List(ContentBlock.Text("info")), Some(Json.obj("code" -> Json.Null, "height" -> 400.asJson))))
+    )
+    ViewTools.of[IO](tool).flatMap { tools =>
+      session(tools = Some(tools)).use { s =>
+        for
+          _     <- s.host.fromView
+          _     <- s.host.toView(call(1, "get-scene-info"))
+          reply <- s.host.fromView
+        yield assertEquals(
+          reply.hcursor.downField("result").downField("structuredContent").focus,
+          Some(Json.obj("code" -> Json.Null, "height" -> 400.asJson))
+        )
+      }
+    }
+
+  test("listServerResources goes through the host as resources/list; createSamplingMessage as sampling/createMessage"):
+    session().use { s =>
+      for
+        _        <- s.host.fromView
+        list     <- s.view.listServerResources().start
+        listReq  <- s.host.fromView
+        _        <- s.host.toView(respond(listReq, Json.obj("resources" -> Json.arr(Json.obj("uri" -> "videos://bunny-1mb".asJson, "name" -> "video-bunny-1mb".asJson)))))
+        listed   <- list.joinWithNever
+        sample   <- s.view.createSamplingMessage(CreateMessageParams(List(SamplingMessage(Role.user, ContentBlock.Text("Hi"))), maxTokens = 50)).start
+        sampleReq <- s.host.fromView
+        _ <- s.host.toView(
+               respond(sampleReq, Json.obj("role" -> "assistant".asJson, "content" -> Json.obj("type" -> "text".asJson, "text" -> "Hello".asJson), "model" -> "m".asJson))
+             )
+        sampled <- sample.joinWithNever
+      yield
+        assertEquals(method(listReq), Some("resources/list"))
+        assertEquals(listReq.hcursor.downField("params").focus, Some(Json.obj()))
+        assertEquals(listed.resources.map(r => (r.uri: String)), List("videos://bunny-1mb"))
+        assertEquals(method(sampleReq), Some("sampling/createMessage"))
+        assertEquals(sampleReq.hcursor.downField("params").get[Int]("maxTokens"), Right(50))
+        assertEquals((sampled.model: String), "m")
+    }
+
+  test("cancellation: a View request that times out tells the host; the host's notifications/cancelled stops a View tool"):
+    Ref.of[IO, Boolean](false).flatMap { stopped =>
+      val hang = ViewTool[NoArgs]("hang", "Never finishes.")(_ => IO.never[String].onCancel(stopped.set(true)))
+      ViewTools.of[IO](hang).flatMap { tools =>
+        session(tools = Some(tools)).use { s =>
+          for
+            _         <- s.host.fromView
+            slow      <- s.view.callServerTool("slow").timeout(200.millis).attempt.start
+            request   <- s.host.fromView
+            cancelled <- s.host.fromView
+            outcome   <- slow.joinWithNever
+            _         <- s.host.toView(call(9, "hang"))
+            _         <- IO.sleep(50.millis)
+            _         <- s.host.toView(notification("notifications/cancelled", Json.obj("requestId" -> 9.asJson, "reason" -> "user".asJson)))
+            _         <- stopped.get.iterateUntil(identity).timeout(2.seconds)
+          yield
+            assert(outcome.isLeft, "the call timed out")
+            assertEquals(method(cancelled), Some("notifications/cancelled"))
+            assertEquals(cancelled.hcursor.downField("params").downField("requestId").focus, request.hcursor.downField("id").focus)
+        }
+      }
+    }
