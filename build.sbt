@@ -222,6 +222,18 @@ lazy val auth = (project in file("modules/auth"))
     )
   )
 
+lazy val otelAuth = (project in file("modules/otel-auth"))
+  .dependsOn(otel, auth)
+  .settings(
+    name        := "iron-mcp-otel-auth",
+    description := "Authorization decisions from iron-mcp-auth as OpenTelemetry metrics and span events.",
+    libraryDependencies ++= Seq(
+      "io.opentelemetry" %  "opentelemetry-sdk-testing" % "1.64.0"       % Test,
+      "org.scalameta"    %% "munit"                     % munitVersion   % Test,
+      "org.typelevel"    %% "munit-cats-effect"         % munitCeVersion % Test
+    )
+  )
+
 lazy val docs = (project in file("modules/docs"))
   .dependsOn(core.jvm, http, auth, tasks.jvm, apps.jvm)
   .settings(
@@ -273,7 +285,7 @@ lazy val nasa = (project in file("modules/nasa"))
 
 lazy val root = (project in file("."))
   .aggregate(
-    protocol.jvm, protocol.native, protocol.js, core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, otel, auth,
+    protocol.jvm, protocol.native, protocol.js, core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, otel, auth, otelAuth,
     tasks.jvm, tasks.native, apps.jvm, apps.native, appsView
   )
   .settings(name := "iron-mcp", publish / skip := true)

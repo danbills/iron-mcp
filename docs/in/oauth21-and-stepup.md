@@ -1,362 +1,201 @@
-# OAuth 2.1 and Step-Up Authorization in iron-mcp
+# Authorization in iron-mcp
 
-Comprehensive guide and architectural specification for **OAuth 2.1**, **RFC 9728 Protected Resource Metadata**, **RFC 8707 Audience Binding**, and **SEP-2350 Step-Up Authorization** in `iron-mcp-auth`.
+`iron-mcp-auth` makes an MCP server an OAuth 2.1 **resource server**, and an MCP client a careful OAuth client. It follows the MCP authorization spec (revision `2026-07-28`), RFC 9728, RFC 8707, RFC 9068, RFC 6750, SEP-2350 (step-up) and RFC 7662 (introspection).
 
-Companion implementation for **The MCP Engineer's Handbook**, Chapter 9:
-- **Section 9.2: OAuth 2.1 — The Standard Path**
-- **Section 9.2.2: Protected Resource Metadata (RFC 9728)**
-- **Section 9.2.4: Audience Binding (RFC 8707) & The Downstream Trap**
-- **Section 9.2.7 & 9.7.4: Per-Tool Scope Policies & The 403 Challenge**
-- **Section 9.7.4: The Scope-Union Rule and Step-Up Authorization (SEP-2350)**
-- **Section 9.2.8: The Token Passthrough Prohibition ("Validate, Don't Forward")**
+**The easy path is the strict one.** A validator needs an issuer and an audience before it compiles. A tool that does not say who may call it can be called by nobody. A token without `exp` is refused. You have to write code to weaken any of this; you never have to write code to get it.
 
 ---
 
-## 1. Architecture Overview
+## 1. What it stops
 
-In the MCP Protocol (revision `2026-07-28`), the MCP HTTP Server acts purely as an **OAuth 2.1 Resource Server (RS)**. It does not issue tokens, authenticate user passwords, or display consent screens; those duties belong strictly to a dedicated **Authorization Server (AS)** such as Keycloak, Okta, or Auth0.
-
-```
-+-----------------------------------------------------------------------------------------+
-|                                    OAUTH 2.1 TOPOLOGY                                   |
-|                                                                                         |
-|       +------------------------------------+                                            |
-|       |     Authorization Server (AS)      |                                            |
-|       |  (Keycloak on danarch:10000)       |                                            |
-|       |  - Issues RS256 signed JWTs        |                                            |
-|       |  - Publishes JWKS at /certs        |                                            |
-|       +-----------------+------------------+                                            |
-|                         ^                                                               |
-|        Token Request /  | Discover & Validate                                           |
-|        Step-Up Union    | RS256 JWKS Keys                                               |
-|                         |                                                               |
-|   +---------------------+------+               +------------------------------------+   |
-|   |        MCP Client          |   HTTP POST   |       iron-mcp Server (:5302)      |   |
-|   |  - McpHttpClient           | ------------> | - McpAuthServer (Resource Server)  |   |
-|   |  - StepUpClient            | <------------ | - TokenValidator (RS256 / HS256)   |   |
-|   |  - Scope-Union Rule        | 401/403/200   | - ToolScopePolicy (Per-Tool Scopes)|   |
-|   |  - Remembers requested     |               | - McpServer (Dispatches tools)     |   |
-|   +----------------------------+               +------------------------------------+   |
-+-----------------------------------------------------------------------------------------+
-```
-
-### The Rejection Ladder
-
-Every incoming MCP request traverses an explicit rejection ladder. Each rung enforces one security guarantee:
-
-| Request Condition | HTTP Status | Response Header & Body | Architectural Obligation |
-| :--- | :--- | :--- | :--- |
-| **No / Missing Token** | `401 Unauthorized` | `WWW-Authenticate: Bearer error="invalid_request", resource_metadata="..."` | **RFC 9728 Discovery (§9.2.2)**: Points the client to the Resource Server's metadata document. |
-| **Genuine Token, Wrong Audience** | `401 Unauthorized` | `WWW-Authenticate: Bearer error="invalid_token", error_description="...different resource... (RFC 8707)", resource_metadata="..."` | **RFC 8707 Audience Binding (§9.2.4)**: Thwarts the Downstream Trap. A token must name *this* server in its `aud` claim. |
-| **Right Audience, Missing Tool Scope** | `403 Forbidden` | `WWW-Authenticate: Bearer error="insufficient_scope", scope="<full required>", resource_metadata="..."` | **Per-Tool Scope Policy (§9.2.7 & §9.7.4)**: Drives Step-Up. Challenge names the full scope set needed for the tool. |
-| **Right Audience, Sufficient Scopes** | `200 OK` | JSON-RPC tool result or SSE message event | **Authorized Tool Execution**: Closes tools over caller claims. |
+| Attack | What stops it |
+| :--- | :--- |
+| A genuine token minted for another service is replayed here (the downstream trap) | `aud` must equal this server's resource URI (RFC 8707); `TokenValidator.Config` has no default for it |
+| A token from another realm or IdP | `iss` must equal the configured issuer |
+| An OIDC ID token, or a refresh token, presented as an access token | the token-type profile: `typ: at+jwt` (RFC 9068), or Keycloak's payload `typ: Bearer` |
+| `alg: none`; HS256 "signed" with the server's RSA public key (algorithm confusion) | the algorithm allowlist comes from config, never from the token; each key is tied to its type, curve and declared `alg` |
+| ECDSA signatures with `r = 0` or `s = 0` (CVE-2022-21449) | refused before the JDK sees them |
+| Weak keys; encryption keys in the JWKS | RSA under 2048 bits, `use: enc`, `key_ops` without `verify`, private JWKs, and EC points off their curve are dropped |
+| A token with no `kid` checked against "the first key" | without `kid`, a token matches only if exactly one key fits |
+| Random `kid`s used to flood the authorization server | one JWKS fetch at a time, and an unknown `kid` refetches at most every 30 s |
+| A token that never expires, or not yet valid, or issued in the future | `exp` required; `nbf` and `iat` checked; optional `maxAge` |
+| Oversized tokens | refused over 8 KiB before any decoding |
+| A forgotten scope rule | `AuthPolicy` denies anything it does not name; `undeclared` lists such tools at startup |
+| Calling a tool the caller cannot see | refused at the HTTP layer (`403`) and again inside `ScopedTools` |
+| Reading resources or prompts without scope | gated by URI prefix and by name, as tools are |
+| Reading or cancelling someone else's task by ID | tasks carry an owner (`TaskServer(owner = ...)`) |
+| A header naming one tool while the body calls another | McpHttp checks `Mcp-Name` against the body before auth runs |
+| Quote or CRLF injection into `WWW-Authenticate` | every parameter is an escaped quoted-string; descriptions are fixed text, never token contents |
+| An invalid token on a public tool treated as anonymous | an invalid token is always `401`, even in optional sign-in |
+| A stolen token used after the user signs out | `RevocationList` (`jti`, `sid`, subject) and RFC 7662 introspection, layered on local checks |
+| The JWKS endpoint is down | `503`, never a pass |
+| "Who did that?" | `AuthAudit`: every decision, with subject, client, target and scopes, never the token; `iron-mcp-otel-auth` turns it into metrics and span events |
 
 ---
 
-## 2. Discovery & The 401 Gate (RFC 9728)
-
-When an unauthenticated client sends a request to the MCP endpoint (e.g. `POST /mcp`), the server rejects it with `401 Unauthorized`. Crucially, the response header carries the `resource_metadata` parameter:
-
-```http
-HTTP/1.1 401 Unauthorized
-WWW-Authenticate: Bearer error="invalid_request", resource_metadata="http://localhost:5309/.well-known/oauth-protected-resource/mcp"
-```
-
-The client follows this pointer to obtain the **RFC 9728 Protected Resource Metadata document**:
-
-```bash
-curl -s http://localhost:5309/.well-known/oauth-protected-resource/mcp
-```
-
-```json
-{
-  "resource": "http://localhost:5309/mcp",
-  "authorization_servers": [
-    "https://danarch.tail09c16c.ts.net:10000/realms/hacker-bros"
-  ],
-  "scopes_supported": [
-    "mcp:read",
-    "mcp:export"
-  ],
-  "bearer_methods_supported": [
-    "header"
-  ]
-}
-```
-
-From this document, the client learns:
-1. The canonical **resource indicator** (`resource`: `http://localhost:5309/mcp`), which it must specify when requesting tokens (RFC 8707).
-2. The authoritative **Authorization Server** (`authorization_servers`), directing the client to Keycloak's OIDC discovery endpoint (`/.well-known/openid-configuration`).
-
-### Sequence Diagram: Discovery & 401 Gate
-
-![Discovery and 401 Sequence](../images/discovery_and_401.svg)
-
----
-
-## 3. RFC 8707 Audience Binding & The Downstream Trap
-
-### Why Signature Verification is Not Enough
-
-A common security vulnerability in OAuth resource servers is verifying only the token's cryptographic signature and expiration.
-
-> [!CAUTION]
-> **The Downstream Trap (§9.2.4)**
-> Suppose an authorized client interacts with Service A and Service B, both protected by the same corporate Keycloak realm.
-> If Service B is compromised, it could replay the user's genuine Bearer token against Service A!
-> If Service A only checks `verifySignature(token)`, the token passes because Keycloak legitimately signed it.
-> Service B successfully impersonates the user against Service A.
-
-**The Solution: RFC 8707 Resource Indicators.**
-When a client requests a token, it specifies `resource=http://localhost:5309/mcp`. Keycloak includes this canonical URI in the token's `aud` (audience) claim.
-
-When `iron-mcp-auth` validates an incoming token:
-```scala
-if (!claims.aud.contains(expectedResource)) {
-  Left(AuthError.WrongAudience(expectedResource, claims.aud))
-}
-```
-
-If the token belongs to another resource, `iron-mcp` rejects it immediately with HTTP 401:
-
-```json
-{
-  "error": "invalid_token",
-  "error_description": "Token audience is 'https://other-service.internal/api' — this is a token for a different resource. This server only accepts tokens minted for 'http://localhost:5309/mcp' (RFC 8707 resource indicator)."
-}
-```
-
-### Sequence Diagram: Defeating the Downstream Trap
-
-![Audience Binding Sequence](../images/audience_binding.svg)
-
----
-
-## 4. Per-Tool Scope Policies & The 403 Challenge
-
-Different tools require different levels of authorization. For example:
-- `read_summary`: read-only access (requires `mcp:read`).
-- `export_full_data`: sensitive bulk export (requires `mcp:read` AND `mcp:export`).
-
-### 403 Forbidden vs 401 Unauthorized
-
-> [!NOTE]
-> A scope failure is HTTP **403 Forbidden**, never `401 Unauthorized`.
-> The token *is* authentic and valid for this resource server; the operation just exceeds what was granted.
-
-### The Challenge Names the FULL Required Set
-
-When `export_full_data` is invoked with a token holding only `mcp:read`, the server responds:
-
-```http
-HTTP/1.1 403 Forbidden
-WWW-Authenticate: Bearer error="insufficient_scope", scope="mcp:read mcp:export", resource_metadata="http://localhost:5302/.well-known/oauth-protected-resource/mcp"
-
-{
-  "error": "insufficient_scope",
-  "error_description": "'export_full_data' requires [mcp:read mcp:export]; the token grants [mcp:read]."
-}
-```
-
-Notice that the `scope` parameter names **everything** the tool needs (`mcp:read mcp:export`), not just the missing slice (`mcp:export`). The server stays stateless about past interactions and describes complete operational requirements in one single challenge.
-
----
-
-## 5. The Scope-Union Rule & Step-Up (SEP-2350)
-
-Step-up authorization (SEP-2350, Handbook §9.7.4) specifies how clients handle `403 insufficient_scope` challenges.
-
-### The Scope-Union Rule
-
-$$\text{requestedScopes}_{\text{new}} = \text{requestedScopes}_{\text{previous}} \cup \text{challengeScopes}$$
-
-When the 403 challenge arrives:
-1. The client parses the challenged scopes (`challengeScopes`).
-2. The client computes the **union** with all scopes it has previously requested (`requestedScopes`).
-3. The client requests a new token for the union from the Authorization Server.
-4. The client retries the tool call.
-
-### Sequence Diagram: Step-Up with the Scope-Union Rule
-
-![Step-Up Union Flow](../images/stepup_union_flow.svg)
-
----
-
-### The `--naive` Anti-Pattern (Why Scope Accumulation is the Client's Job)
-
-Why can't the client simply request only the missing scope (`mcp:export`)?
-
-> [!WARNING]
-> **The Naive Regression (§9.7.4)**
-> Authorization Servers and Resource Servers are stateless about past grants.
-> In OAuth 2.1, obtaining a new access token **replaces** the previous token.
-> If the client asks only for the missing scope (`mcp:export`), Keycloak returns a token granting *only* `mcp:export`.
->
-> Two catastrophic failures occur:
-> 1. **The retry fails**: `export_full_data` requires `mcp:read` too, which is no longer in the token.
-> 2. **Silent regression in previously working tools**: Calling `read_summary` (which worked 5 seconds ago) now crashes with a 403 challenge!
-
-### Sequence Diagram: The Naive Regression
-
-![Naive Anti-Pattern](../images/naive_antipattern.svg)
-
----
-
-### Narrower Grants
-
-What if the user or policy declines consent for a sensitive scope?
-If the client requested `mcp:read mcp:export` but Keycloak granted only `mcp:read`:
-
-```scala
-val withheld = requestedScopes -- grantedScopes
-if (withheld.nonEmpty) {
-  // Halt immediately. Retrying will only produce another 403.
-  throw NarrowerGrantException(operation, withheld, grantedScopes)
-}
-```
-
-`StepUpClient` detects narrower grants and halts with an informative diagnostic instead of entering an infinite retry loop.
-
----
-
-## 6. Type-Checked Implementation Walkthrough
-
-All code examples below are verified by `mdoc` against `iron-mcp-core`, `iron-mcp-http`, and `iron-mcp-auth`.
-
-### Defining Per-Tool Scope Policies
-
-```scala mdoc:silent
-import ironmcp.auth.ToolScopePolicy
-
-val policy = ToolScopePolicy.Builder.empty
-  .require("read_summary", "mcp:read")
-  .require("export_full_data", "mcp:read", "mcp:export")
-  .require("admin_purge", "mcp:admin")
-  .build
-```
-
-Checking tool requirements against granted scopes:
-
-```scala mdoc
-// Caller with only read permission
-policy.check("read_summary", Set("mcp:read"))
-
-// Insufficient scope: returns the full required set
-policy.check("export_full_data", Set("mcp:read"))
-
-// Sufficient scopes
-policy.check("export_full_data", Set("mcp:read", "mcp:export"))
-```
-
----
-
-### Setting up the Resource Server (`McpAuthServer`)
+## 2. A protected server, in full
 
 ```scala mdoc:silent
 import cats.effect.IO
-import io.github.iltotore.iron.*
+import io.circe.Decoder
 import io.github.iltotore.iron.autoRefine
 import ironmcp.auth.*
-import ironmcp.http.McpHttp
 import ironmcp.protocol.Implementation
-import ironmcp.server.*
-import io.circe.Decoder
 import ironmcp.schema.JsonSchemaOf
-
-final case class ReportQuery(format: Option[String] = None) derives Decoder, JsonSchemaOf
-
-val tool = McpTool[ReportQuery]("read_summary", "Read summary")(_ => IO.pure("Summary data"))
-val mcpServer = McpServer[IO](
-  info = Implementation(name = "reports", version = "1.0.0"),
-  tools = Some(ToolSet.of(tool))
-)
-
-val metadata = ProtectedResourceMetadata(
-  resource = "http://localhost:5302/mcp",
-  authorization_servers = List("https://danarch.tail09c16c.ts.net:10000/realms/hacker-bros"),
-  scopes_supported = Some(List("mcp:read", "mcp:export"))
-)
-
-val authConfig = McpAuthServer.Config(
-  mcpConfig = McpHttp.Config(path = "/mcp"),
-  serverUrl = "http://localhost:5302",
-  metadata = metadata,
-  scopePolicy = policy
-)
-```
-
----
-
-### Configuring the Token Validator (RS256 & Keycloak JWKS)
-
-`iron-mcp-auth` verifies RS256 signatures with zero reflection, pure Scala, and standard `java.security.KeyFactory`:
-
-```scala mdoc:silent
+import ironmcp.server.*
 import org.http4s.Uri
 import org.http4s.client.Client
 
-def createValidator(httpClient: Client[IO], jwksUri: Uri): IO[TokenValidator[IO]] =
+final case class ReportQuery(format: Option[String] = None) derives Decoder, JsonSchemaOf
+
+// Each tool says who may call it.
+val summary = McpTool[ReportQuery]("read_summary", "Read the summary")(_ => IO.pure("Summary")).requires("mcp:read")
+val exporter = McpTool[ReportQuery]("export_full_data", "Export everything")(_ => IO.pure("csv")).requires("mcp:read", "mcp:export")
+val ping    = McpTool[ReportQuery]("ping", "Is it up?")(_ => IO.pure("pong")).public
+val tools   = List(summary, exporter, ping)
+
+val issuer   = "https://danarch.tail09c16c.ts.net:10000/realms/iron-mcp"
+val resource = ResourceIdentity.unsafe("https://reports.example.com/mcp")
+val policy   = AuthPolicy.fromTools(tools*)
+
+def routes(http: Client[IO]) =
   for
-    jwksProvider <- JwksProvider.keycloak[IO](httpClient, jwksUri)
-    validator = TokenValidator.rs256[IO](
-      jwksProvider,
-      TokenValidator.Config(
-        expectedResource = Some("http://localhost:5302/mcp"),
-        expectedIssuer = Some("https://danarch.tail09c16c.ts.net:10000/realms/hacker-bros")
-      )
-    )
-  yield validator
-```
-
----
-
-### Hiding Tools the Token Cannot Call
-
-The C# SDK filters `tools/list` by `[Authorize]`. Here, `ScopedTools` does the same thing. Build it per request from the validated claims, inside `routesFor`:
-
-```scala mdoc:silent
-def scopedRoutes(validator: TokenValidator[IO]) =
-  McpAuthServer.routesFor(validator, authConfig) { (_, claims) =>
-    IO.pure(Right(McpServer[IO](
-      info = Implementation(name = "reports", version = "1.0.0"),
-      tools = Some(ScopedTools(ToolSet.of(tool), authConfig.scopePolicy, claims))
-    )))
+    _    <- IO.raiseWhen(policy.undeclared(tools*).nonEmpty)(new IllegalStateException("tools without an access rule"))
+    keys <- JwksProvider.remote[IO](http, Uri.unsafeFromString(s"$issuer/protocol/openid-connect/certs"))
+    validator = TokenValidator.jwks[IO](keys, TokenValidator.Config(issuer, resource))
+    config    = McpAuthServer.Config(resource, List(issuer), policy)
+  yield McpAuthServer.routesFor(validator, config) { (_, claims) =>
+    IO.pure(Right(McpServer[IO](Implementation("reports", "1.0.0"), tools = Some(ScopedTools(ToolSet(tools), policy, Some(claims))))))
   }
 ```
 
-A token with only `mcp:read` sees only the tools that `mcp:read` allows. Because the list depends on the token, it is sent with `cacheScope: "private"`.
+That is the whole of it:
 
-Hiding a tool keeps it away from the model, but it does not protect the tool. A client can still call a tool it never saw listed. That call gets the same `403 insufficient_scope` challenge as before, so the scope policy at execution time is still what protects the tool.
+- `ResourceIdentity` is the server's public URL. It is the metadata's `resource`, the audience every token must carry, the path the routes are mounted on, and the source of the `resource_metadata` URL (`https://reports.example.com/.well-known/oauth-protected-resource/mcp`, per RFC 9728 §3.1). It must be `https` (loopback `http` is allowed for development).
+- `.requires(...)`, `.signedIn` and `.public` write the tool's access into its `_meta` under `io.github.danbills/auth`. `AuthPolicy.fromTools` reads it back, so the rule lives on the tool it protects. Hosts and Views can read the same entry to show a lock.
+- The scopes in the metadata's `scopes_supported` come from the policy.
 
----
+### The ladder
 
-### Using `StepUpClient` for Automatic Scope-Union Retries
+| Request | Answer |
+| :--- | :--- |
+| `Authorization` repeated or malformed, or `access_token` in the query | `400 invalid_request` |
+| No token, target not public | `401`, `WWW-Authenticate: Bearer resource_metadata="…", scope="…"` (no `error`, RFC 6750 §3.1) |
+| Token invalid in any way | `401 invalid_token`, fixed description |
+| Signing keys unreachable | `503` with `Retry-After` |
+| Target not in the policy | `403`, no `scope` (there is nothing to ask for) |
+| Token lacks the target's scopes | `403 insufficient_scope`, `scope` naming the **full** set the target needs |
+| Otherwise | the server `routesFor` built for these claims |
 
-```scala mdoc:silent
-// Given a function that acquires tokens from Keycloak for any requested scope set
-def acquireTokenFromKeycloak(requestedScopes: Set[String]): IO[TokenResponse] =
-  IO.pure(TokenResponse("jwt_token_here", "Bearer", Some(3600), None, Some(requestedScopes.mkString(" "))))
-
-val stepUpInit = for
-  client <- StepUpClient.create[IO](acquireTokenFromKeycloak, strategy = ScopeStrategy.Union)
-  // Request minimal initial scope
-  _ <- client.initialAuthorize(Set("mcp:read"))
-  headers <- client.authHeaders
-yield headers
+```http
+HTTP/1.1 403 Forbidden
+WWW-Authenticate: Bearer error="insufficient_scope", error_description="The access token does not grant the scope this request needs", resource_metadata="https://reports.example.com/.well-known/oauth-protected-resource/mcp", scope="mcp:export mcp:read"
 ```
 
 ---
 
-### The Client Flow: Discovery, PKCE and Refresh (`OAuthClient`)
+## 3. Access to resources and prompts
 
-`OAuthClient` is the client side of MCP authorization, going from the first `401` to a token:
+```scala mdoc:silent
+val fuller = policy
+  .resource("file:///public/", Access.Public)
+  .resource("file:///reports/", Access.Scopes(Set("mcp:read")))
+  .prompt("weekly_digest", Access.SignedIn)
+```
 
-1. **Discovery.** `discover(rejection, resource)` reads `resource_metadata` from the challenge and fetches the RFC 9728 document. It checks that the document names the resource that was called. It then fetches the authorization server's RFC 8414 metadata (or its OpenID configuration) and checks the `issuer`.
-2. **Trust.** Only an authorization server on the client's allowlist is ever contacted. The resource server is the one that names it, and a client that follows any name can be sent to an attacker (the class of bug in GHSA-6qxp-vccf-f47h).
-3. **Authorization code with PKCE S256.** A server that does not advertise `S256` is refused before the user is sent anywhere. Every request carries the RFC 8707 `resource` parameter, and the redirect's `state` must match.
+The longest matching URI prefix wins, and a URI no prefix matches is refused. Wrap your providers in `ScopedResources` and `ScopedPrompts` (as `ScopedTools`) so listings show only what the caller may use and the providers refuse the rest themselves.
+
+Everything else (`tools/list`, `server/discover`, `tasks/get`, …) needs `policy.methods`, which is `SignedIn` by default.
+
+---
+
+## 4. Optional sign-in
+
+Some servers have tools anyone may call and tools that need a user. `routesForOptional` hands you `Option[TokenClaims]`:
+
+```scala mdoc:silent
+def optionalRoutes(validator: TokenValidator[IO]) =
+  val open = policy.publicListing // anonymous callers may list and discover
+  McpAuthServer.routesForOptional(validator, McpAuthServer.Config(resource, List(issuer), open)) { (_, caller) =>
+    IO.pure(Right(McpServer[IO](Implementation("reports", "1.0.0"), tools = Some(ScopedTools(ToolSet(tools), open, caller)))))
+  }
+```
+
+Anonymous callers see and call the `public` tools. The first call to a protected tool gets the `401` that starts the client's sign-in. A token that is present but invalid is always refused: a client must learn its token is bad, not silently lose its identity.
+
+---
+
+## 5. The validator
+
+`TokenValidator.Config(issuer, resource)` is all you must give. The rest has strict defaults:
+
+| Setting | Default |
+| :--- | :--- |
+| `algorithms` | `RS256 RS384 RS512 PS256 PS384 PS512 ES256 ES384 EdDSA`. HS256 is never accepted with keys from a JWKS. |
+| `profile` | `AccessTokenProfile.standard`: `typ: at+jwt`, or Keycloak's payload `typ: Bearer`. Use `.rfc9068` to insist on the former. |
+| `clockSkew` | 60 s, on `exp`, `nbf` and `iat` |
+| `maxAge` | none; set it to refuse tokens issued too long ago |
+| `maxTokenBytes` | 8 KiB |
+
+`TokenValidator.sharedSecret` (HS256) exists for tests. Whoever can check such a token can mint one.
+
+### Revocation and introspection
+
+A JWT stays valid until it expires. To end it sooner:
+
+```scala mdoc:silent
+def withRevocation(local: TokenValidator[IO]) =
+  RevocationList.inMemory[IO].map { revoked =>
+    // revoked.revokeSession(sid, until), revoked.revokeToken(jti, until),
+    // revoked.revokeSubject(iss, sub, before, until): "sign out everywhere"
+    (local.withRevocation(revoked), revoked)
+  }
+
+def layered(http: Client[IO], local: TokenValidator[IO]) =
+  Introspection[IO](
+    http,
+    Introspection.Config(issuer, resource.resource, s"$issuer/protocol/openid-connect/token/introspect", ClientAuth.SecretBasic("reports-rs", sys.env("RS_SECRET")))
+  ).map(remote => TokenValidator.layered(local, remote)(_.scopes.contains("mcp:admin")))
+```
+
+`layered` checks every token locally, and also asks the authorization server (RFC 7662) about tokens carrying `mcp:admin`, so revoking an admin's session takes effect within the introspection cache's 30 s rather than at token expiry. Introspection answers are cached by the token's SHA-256, never the token. Any failure to get an answer is a `503`.
+
+---
+
+## 6. The audit trail
+
+```scala mdoc:silent
+def audited(validator: TokenValidator[IO]) =
+  val audit = AuthAudit.jsonLines[IO](line => IO.println(line))
+  McpAuthServer.routesFor(validator, McpAuthServer.Config(resource, List(issuer), policy), audit) { (_, claims) =>
+    IO.pure(Right(McpServer[IO](Implementation("reports", "1.0.0"), tools = Some(ScopedTools(ToolSet(tools), policy, Some(claims))))))
+  }
+```
+
+```json
+{"at":1793318400123,"allowed":false,"reason":"insufficient_scope","detail":"requires [mcp:export mcp:read], granted [mcp:read]","method":"tools/call","target":"tool:export_full_data","subject":"8c1f…","clientId":"claude-desktop","issuer":"https://…/realms/iron-mcp","jti":"…","required":["mcp:export","mcp:read"],"granted":["mcp:read"]}
+```
+
+`iron-mcp-otel-auth` provides `OtelAuth.audit(meter, tracer)`: a `mcp.auth.decisions` counter labelled by outcome and reason, and an `mcp.auth.decision` event on the current span. A rise in `audience` or `signature` refusals means someone is presenting tokens never meant for this server. Send both with `AuthAudit.both`.
+
+---
+
+## 7. Keycloak
+
+Keycloak does not act on the RFC 8707 `resource` parameter. A token's `aud` comes from the realm's **Audience mappers**, so give each MCP client scope one that adds the MCP resource URI, as the `iron-mcp` realm file in `modules/auth/keycloak/` does. Then Keycloak's tokens validate like any other issuer's: `TokenValidator.Config(issuer, resource)` with the realm URL as issuer, and the default profile accepts Keycloak's `typ: Bearer` while refusing its ID and refresh tokens.
+
+---
+
+## 8. The client: discovery, PKCE, refresh, step-up
+
+`OAuthClient` is the client side, from the first `401` to a token:
+
+1. **Discovery.** `discover(rejection, resource)` reads `resource_metadata` from the challenge, fetches the RFC 9728 document, checks it names the resource that was called, then fetches the authorization server's RFC 8414 metadata (or OpenID configuration) and checks its `issuer`.
+2. **Trust.** Only an authorization server on the client's allowlist is ever contacted. The resource server names it, and a client that follows any name can be sent to an attacker (the class of bug in GHSA-6qxp-vccf-f47h).
+3. **Authorization code with PKCE S256.** A server that does not advertise `S256` is refused before the user is sent anywhere. Every request carries the RFC 8707 `resource`, and the redirect's `state` must match.
 4. **Refresh.** `authorizer` refreshes when the requested scopes are already granted. A refresh cannot widen a grant, so a step-up goes back to the user.
 
-`authorizer` has exactly the shape `StepUpClient.create` takes, so the Scope-Union Rule and the refresh-on-401 come together:
+`authorizer` has exactly the shape `StepUpClient.create` takes:
 
 ```scala mdoc:silent
 import cats.effect.std.SecureRandom
@@ -364,34 +203,21 @@ import cats.effect.std.SecureRandom
 def connect(http: Client[IO], rejection: ironmcp.client.McpClientError.Http, openBrowser: Uri => IO[AuthorizationResponse]) =
   for
     random    <- SecureRandom.javaSecuritySecureRandom[IO]
-    oauth      = OAuthClient[IO](http, random, trusted = Set("https://danarch.tail09c16c.ts.net:10000/realms/hacker-bros"))
-    found     <- oauth.discover(rejection, resource = "http://localhost:5302/mcp")
-    authorize <- oauth.authorizer(found, clientId = "mcp-client", redirectUri = "http://127.0.0.1:7777/callback", openBrowser)
+    oauth      = OAuthClient[IO](http, random, trusted = Set(issuer))
+    found     <- oauth.discover(rejection, resource = resource.resource)
+    authorize <- oauth.authorizer(found, clientId = "iron-mcp-public", redirectUri = "http://127.0.0.1:7777/callback", openBrowser)
     stepUp    <- StepUpClient.create[IO](authorize)
   yield stepUp
 ```
 
-`openBrowser` opens the URL and returns the `code` and `state` from the redirect. Typically it runs a loopback listener on `redirectUri`.
+### The Scope-Union Rule (SEP-2350)
 
----
+On `403 insufficient_scope`, `StepUpClient` asks for everything it asked for before **plus** the challenged scopes, then retries:
 
-## 7. Verification and Testing Checklist
+$$\text{requested}_{\text{new}} = \text{requested}_{\text{previous}} \cup \text{challenged}$$
 
-When deploying or testing an OAuth 2.1 protected MCP server:
+Asking for the missing scope alone (`ScopeStrategy.Naive`) replaces the token with one that lacks the scopes that already worked, so the retry fails and tools that worked a moment ago start failing too:
 
-1. **Verify RFC 9728 Discovery**:
-   - `curl -si http://localhost:5302/mcp -X POST -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/list'`
-   - Confirm status is `401 Unauthorized` and `WWW-Authenticate` header contains `resource_metadata`.
-   - `curl -s http://localhost:5302/.well-known/oauth-protected-resource/mcp`
-   - Confirm returned JSON matches `ProtectedResourceMetadata`.
-2. **Verify RFC 8707 Audience Check**:
-   - Mint a token whose `aud` is set to `https://other.service/mcp`.
-   - Call `/mcp` with `Authorization: Bearer $TOKEN`.
-   - Confirm response is `401 Unauthorized` naming `invalid_token` and explaining audience mismatch.
-3. **Verify Per-Tool 403 Challenge**:
-   - Call `read_summary` with `mcp:read` token: verify `200 OK`.
-   - Call `export_full_data` with `mcp:read` token: verify `403 Forbidden` with `error="insufficient_scope"` and `scope="mcp:read mcp:export"`.
-4. **Verify The Scope-Union Rule**:
-   - Re-authorize for `mcp:read mcp:export`.
-   - Retry `export_full_data`: verify `200 OK`.
-   - Re-call `read_summary`: verify `200 OK` (proving `mcp:read` was not lost).
+![Naive Anti-Pattern](../images/naive_antipattern.svg)
+
+If the authorization server grants less than was asked (the user or a policy declined), `StepUpClient` stops with `NarrowerGrantException` instead of looping.

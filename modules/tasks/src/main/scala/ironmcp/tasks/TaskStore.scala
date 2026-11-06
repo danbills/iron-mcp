@@ -7,12 +7,20 @@ import io.circe.Json
 import ironmcp.protocol.{CallToolResult, JsonRpcError}
 import ironmcp.tasks.TaskModels.*
 
-/** Storage and state machine for background MCP tasks. */
+/** Storage and state machine for background MCP tasks.
+  *
+  * A task may have an owner: the caller that started it (over HTTP with
+  * authorization, its token's subject). `get`, `cancel` and `update` are
+  * answered only for that same owner; for anyone else the task does not
+  * exist, so a task ID alone is not enough to read or cancel someone else's
+  * work. A task created without an owner is reachable by anyone holding its
+  * ID.
+  */
 trait TaskStore[F[_]]:
-  def get(taskId: String): F[Option[GetTaskResult]]
-  def cancel(taskId: String): F[Option[CancelTaskResult]]
-  def update(taskId: String, inputResponses: Map[String, Json]): F[Option[UpdateTaskResult]]
-  def create(taskId: String, pollIntervalMs: Long, ttlMs: Long, cancelHook: F[Unit]): F[CreateTaskResult]
+  def get(taskId: String, owner: Option[String]): F[Option[GetTaskResult]]
+  def cancel(taskId: String, owner: Option[String]): F[Option[CancelTaskResult]]
+  def update(taskId: String, inputResponses: Map[String, Json], owner: Option[String]): F[Option[UpdateTaskResult]]
+  def create(taskId: String, pollIntervalMs: Long, ttlMs: Long, cancelHook: F[Unit], owner: Option[String]): F[CreateTaskResult]
   def complete(taskId: String, result: CallToolResult): F[Unit]
   def fail(taskId: String, error: JsonRpcError): F[Unit]
   def requireInput(taskId: String, inputRequest: Json): F[Unit]
@@ -29,8 +37,15 @@ object TaskStore:
       result: Option[CallToolResult] = None,
       error: Option[JsonRpcError] = None,
       inputRequest: Option[Json] = None,
-      cancelHook: F[Unit]
+      cancelHook: F[Unit],
+      owner: Option[String] = None
   ):
+    /** An owned task is visible to its owner only. */
+    def visibleTo(caller: Option[String]): Boolean = owner.forall(o => caller.contains(o))
+
+    /** Past its TTL, counted from its last change. */
+    def expired(now: Long): Boolean = now - lastUpdatedAt > ttlMs / 1000
+
     def toGetResult: GetTaskResult =
       GetTaskResult(
         taskId = taskId,
@@ -55,10 +70,10 @@ object TaskStore:
         private def nowSeconds: F[Long] =
           Temporal[F].realTime.map(_.toSeconds)
 
-        def get(taskId: String): F[Option[GetTaskResult]] =
-          tasksRef.get.map(_.get(taskId).map(_.toGetResult))
+        def get(taskId: String, owner: Option[String]): F[Option[GetTaskResult]] =
+          tasksRef.get.map(_.get(taskId).filter(_.visibleTo(owner)).map(_.toGetResult))
 
-        def create(taskId: String, pollIntervalMs: Long, ttlMs: Long, cancelHook: F[Unit]): F[CreateTaskResult] =
+        def create(taskId: String, pollIntervalMs: Long, ttlMs: Long, cancelHook: F[Unit], owner: Option[String]): F[CreateTaskResult] =
           nowSeconds.flatMap { now =>
             val entry = TaskEntry[F](
               taskId = taskId,
@@ -67,9 +82,11 @@ object TaskStore:
               ttlMs = if ttlMs > 0 then ttlMs else defaultTtlMs,
               createdAt = now,
               lastUpdatedAt = now,
-              cancelHook = cancelHook
+              cancelHook = cancelHook,
+              owner = owner
             )
-            tasksRef.update(_.updated(taskId, entry)).as(
+            // Finished tasks past their TTL go, so the map cannot grow without bound.
+            tasksRef.update(m => m.filterNot((_, e) => e.status.isTerminal && e.expired(now)).updated(taskId, entry)).as(
               CreateTaskResult(
                 resultType = "task",
                 taskId = taskId,
@@ -110,10 +127,10 @@ object TaskStore:
             }
           }
 
-        def cancel(taskId: String): F[Option[CancelTaskResult]] =
+        def cancel(taskId: String, owner: Option[String]): F[Option[CancelTaskResult]] =
           nowSeconds.flatMap { now =>
             tasksRef.modify { map =>
-              map.get(taskId) match
+              map.get(taskId).filter(_.visibleTo(owner)) match
                 case Some(e) if !e.status.isTerminal =>
                   val updated = e.copy(status = TaskStatus.Cancelled, lastUpdatedAt = now)
                   (map.updated(taskId, updated), Some((e.cancelHook, CancelTaskResult(taskId, TaskStatus.Cancelled))))
@@ -127,11 +144,11 @@ object TaskStore:
             }
           }
 
-        def update(taskId: String, inputResponses: Map[String, Json]): F[Option[UpdateTaskResult]] =
+        def update(taskId: String, inputResponses: Map[String, Json], owner: Option[String]): F[Option[UpdateTaskResult]] =
           val _ = inputResponses
           nowSeconds.flatMap { now =>
             tasksRef.modify { map =>
-              map.get(taskId) match
+              map.get(taskId).filter(_.visibleTo(owner)) match
                 case Some(e) if e.status == TaskStatus.InputRequired =>
                   // Transition back to Working as input was provided
                   val updated = e.copy(status = TaskStatus.Working, inputRequest = None, lastUpdatedAt = now)

@@ -1,0 +1,151 @@
+{
+  "_comment": "The iron-mcp realm, applied by scripts/keycloak-realm.sh. __MCP_RESOURCE__ is replaced with the MCP server's public URL (its RFC 8707 resource). No secrets live here: Keycloak generates them and the script prints them once.",
+  "realm": {
+    "realm": "iron-mcp",
+    "enabled": true,
+    "sslRequired": "external",
+    "accessTokenLifespan": 300,
+    "ssoSessionIdleTimeout": 1800,
+    "ssoSessionMaxLifespan": 36000,
+    "revokeRefreshToken": true,
+    "refreshTokenMaxReuse": 0,
+    "bruteForceProtected": true,
+    "permanentLockout": false,
+    "failureFactor": 10,
+    "registrationAllowed": false,
+    "loginWithEmailAllowed": false,
+    "defaultSignatureAlgorithm": "ES256",
+    "passwordPolicy": "length(14) and notUsername and notEmail and passwordHistory(5)",
+    "eventsEnabled": true,
+    "adminEventsEnabled": true,
+    "adminEventsDetailsEnabled": true
+  },
+  "keyProviders": [
+    {
+      "name": "ecdsa-p256",
+      "providerId": "ecdsa-generated",
+      "providerType": "org.keycloak.keys.KeyProvider",
+      "config": { "priority": ["200"], "ecdsaEllipticCurveKey": ["P-256"], "ecGenerateCertificate": ["true"] }
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "mcp:read",
+      "description": "Read reports and summaries through the MCP server",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true", "consent.screen.text": "Read your reports" },
+      "protocolMappers": [
+        {
+          "name": "mcp-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "__MCP_RESOURCE__", "access.token.claim": "true", "introspection.token.claim": "true", "id.token.claim": "false" }
+        }
+      ]
+    },
+    {
+      "name": "mcp:export",
+      "description": "Export full datasets through the MCP server",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true", "consent.screen.text": "Export all of your data" },
+      "protocolMappers": [
+        {
+          "name": "mcp-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "__MCP_RESOURCE__", "access.token.claim": "true", "introspection.token.claim": "true", "id.token.claim": "false" }
+        }
+      ]
+    },
+    {
+      "name": "mcp:admin",
+      "description": "Administer the MCP server",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true", "consent.screen.text": "Administer the MCP server" },
+      "protocolMappers": [
+        {
+          "name": "mcp-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "__MCP_RESOURCE__", "access.token.claim": "true", "introspection.token.claim": "true", "id.token.claim": "false" }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "iron-mcp-public",
+      "name": "MCP clients (users signing in)",
+      "description": "Public client: authorization code with PKCE S256, loopback redirects, DPoP-bound tokens.",
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "consentRequired": true,
+      "fullScopeAllowed": false,
+      "redirectUris": ["http://127.0.0.1/*", "http://localhost/*"],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "dpop.bound.access.tokens": "true",
+        "access.token.signed.response.alg": "ES256",
+        "use.refresh.tokens": "true",
+        "post.logout.redirect.uris": "+"
+      },
+      "defaultClientScopes": ["basic", "acr"],
+      "optionalClientScopes": ["mcp:read", "mcp:export", "mcp:admin"]
+    },
+    {
+      "clientId": "iron-mcp-machine",
+      "name": "MCP machine client (private_key_jwt)",
+      "description": "Confidential client for the OAuth Client Credentials extension: it authenticates with a signed JWT (private_key_jwt). Register its public key with scripts/keycloak-realm.sh --machine-jwks <url>.",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-jwt",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "attributes": {
+        "token.endpoint.auth.signing.alg": "ES256",
+        "use.jwks.url": "__MACHINE_USE_JWKS_URL__",
+        "jwks.url": "__MACHINE_JWKS_URL__",
+        "dpop.bound.access.tokens": "true",
+        "access.token.signed.response.alg": "ES256"
+      },
+      "defaultClientScopes": ["basic"],
+      "optionalClientScopes": ["mcp:read", "mcp:export"]
+    },
+    {
+      "clientId": "iron-mcp-ci",
+      "name": "MCP integration tests (client secret)",
+      "description": "Confidential client with a secret, for KeycloakIntegrationSuite. Not DPoP-bound, so plain tests can use it.",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "attributes": { "access.token.signed.response.alg": "ES256" },
+      "defaultClientScopes": ["basic"],
+      "optionalClientScopes": ["mcp:read", "mcp:export"]
+    },
+    {
+      "clientId": "iron-mcp-introspector",
+      "name": "MCP resource server (introspection)",
+      "description": "The MCP server's own credentials for RFC 7662 introspection. It obtains no tokens.",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "defaultClientScopes": [],
+      "optionalClientScopes": []
+    }
+  ]
+}

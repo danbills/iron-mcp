@@ -1,113 +1,59 @@
 package ironmcp
 package auth
 
-import cats.effect.Concurrent
+import cats.effect.Async
+import cats.syntax.all.*
 import io.circe.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityDecoder.*
 import org.http4s.client.Client
-import org.http4s.headers.`Content-Type`
 
-/** Client helper for Keycloak OIDC operations and token issuance. */
-final class KeycloakClient[F[_]: Concurrent](
-    client: Client[F],
-    realmUri: Uri
-):
+/** A Keycloak realm, seen from a resource server or a machine client.
+  *
+  * Keycloak does not act on the RFC 8707 `resource` parameter: a token's
+  * `aud` comes from the realm's Audience mappers. The `iron-mcp` realm file
+  * (`modules/auth/keycloak/`) attaches one to each MCP client scope, so a
+  * token carrying `mcp:read` is audience-bound to the MCP server; check it
+  * with [[TokenValidator]] as with any issuer.
+  */
+final class KeycloakClient[F[_]: Async](client: Client[F], realmUri: Uri):
 
-  private val openidConfigUri: Uri =
-    val base = realmUri.renderString.stripSuffix("/")
-    Uri.unsafeFromString(s"$base/.well-known/openid-configuration")
+  private val base = realmUri.renderString.stripSuffix("/")
 
+  /** The realm's OpenID configuration: the fields a resource server needs. */
   final case class OidcConfig(
       issuer: String,
       token_endpoint: String,
-      jwks_uri: String
-  )
+      jwks_uri: String,
+      introspection_endpoint: Option[String] = None,
+      revocation_endpoint: Option[String] = None
+  ) derives Decoder
 
-  object OidcConfig:
-    given Decoder[OidcConfig] = Decoder.instance { c =>
-      for
-        iss <- c.get[String]("issuer")
-        tok <- c.get[String]("token_endpoint")
-        jwk <- c.get[String]("jwks_uri")
-      yield OidcConfig(iss, tok, jwk)
-    }
-
-  /** Fetches Keycloak's OpenID Connect discovery document. */
   def discover: F[OidcConfig] =
-    client.expect[OidcConfig](openidConfigUri)
+    ResourceIdentity.requireSecure(base).leftMap(OAuthError.Insecure(_)).liftTo[F] *>
+      client.expect[OidcConfig](Uri.unsafeFromString(s"$base/.well-known/openid-configuration")).flatTap { found =>
+        Async[F].raiseWhen(found.issuer.stripSuffix("/") != base)(OAuthError.IssuerMismatch(base, found.issuer))
+      }
 
-  /** Requests an access token using the Client Credentials grant (`client_credentials`). */
-  def clientCredentials(
-      tokenEndpoint: Uri,
-      clientId: String,
-      clientSecret: String,
-      scopes: Set[String] = Set.empty,
-      resource: Option[String] = None
-  ): F[TokenResponse] =
-    val params = collection.mutable.Map[String, String](
-      "grant_type" -> "client_credentials",
-      "client_id" -> clientId,
-      "client_secret" -> clientSecret
+  /** A token for the client itself (`client_credentials`), for `scopes`. */
+  def clientCredentials(oidc: OidcConfig, auth: ClientAuth, scopes: Set[String], resource: Option[String] = None): F[TokenResponse] =
+    OAuthEndpoint.post[F, TokenResponse](
+      client,
+      oidc.issuer,
+      oidc.token_endpoint,
+      auth,
+      List("grant_type" -> "client_credentials")
+        ++ Option.when(scopes.nonEmpty)("scope" -> scopes.toList.sorted.mkString(" "))
+        ++ resource.map("resource" -> _)
     )
-    if scopes.nonEmpty then params("scope") = scopes.mkString(" ")
-    resource.foreach(r => params("resource") = r)
 
-    val form = UrlForm(params.toMap.toSeq*)
-    val req = Request[F](Method.POST, tokenEndpoint)
-      .withEntity(form)
-      .withContentType(`Content-Type`(MediaType.application.`x-www-form-urlencoded`))
-
-    client.expect[TokenResponse](req)
-
-  /** Requests an access token using Direct Access Grants (`password`). */
-  def password(
-      tokenEndpoint: Uri,
-      clientId: String,
-      clientSecret: Option[String],
-      username: String,
-      passwordVal: String,
-      scopes: Set[String] = Set.empty,
-      resource: Option[String] = None
-  ): F[TokenResponse] =
-    val params = collection.mutable.Map[String, String](
-      "grant_type" -> "password",
-      "client_id" -> clientId,
-      "username" -> username,
-      "password" -> passwordVal
+  /** A new access token from a refresh token. */
+  def refreshToken(oidc: OidcConfig, auth: ClientAuth, refreshToken: String, scopes: Set[String] = Set.empty): F[TokenResponse] =
+    OAuthEndpoint.post[F, TokenResponse](
+      client,
+      oidc.issuer,
+      oidc.token_endpoint,
+      auth,
+      List("grant_type" -> "refresh_token", "refresh_token" -> refreshToken)
+        ++ Option.when(scopes.nonEmpty)("scope" -> scopes.toList.sorted.mkString(" "))
     )
-    clientSecret.foreach(s => params("client_secret") = s)
-    if scopes.nonEmpty then params("scope") = scopes.mkString(" ")
-    resource.foreach(r => params("resource") = r)
-
-    val form = UrlForm(params.toMap.toSeq*)
-    val req = Request[F](Method.POST, tokenEndpoint)
-      .withEntity(form)
-      .withContentType(`Content-Type`(MediaType.application.`x-www-form-urlencoded`))
-
-    client.expect[TokenResponse](req)
-
-  /** Refreshes an access token using the Refresh Token grant (`refresh_token`). */
-  def refreshToken(
-      tokenEndpoint: Uri,
-      clientId: String,
-      clientSecret: Option[String],
-      refreshTokenVal: String,
-      scopes: Set[String] = Set.empty,
-      resource: Option[String] = None
-  ): F[TokenResponse] =
-    val params = collection.mutable.Map[String, String](
-      "grant_type" -> "refresh_token",
-      "client_id" -> clientId,
-      "refresh_token" -> refreshTokenVal
-    )
-    clientSecret.foreach(s => params("client_secret") = s)
-    if scopes.nonEmpty then params("scope") = scopes.mkString(" ")
-    resource.foreach(r => params("resource") = r)
-
-    val form = UrlForm(params.toMap.toSeq*)
-    val req = Request[F](Method.POST, tokenEndpoint)
-      .withEntity(form)
-      .withContentType(`Content-Type`(MediaType.application.`x-www-form-urlencoded`))
-
-    client.expect[TokenResponse](req)

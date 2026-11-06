@@ -51,6 +51,12 @@ enum OAuthError(message: String) extends Exception(message):
     extends OAuthError("the authorization response's state does not match the request's (possible CSRF)")
   case TokenRequestFailed(status: Int, body: String)
     extends OAuthError(s"token request failed with HTTP $status: $body")
+  case TokenEndpoint(status: Int, error: String, description: Option[String])
+    extends OAuthError(s"the authorization server refused (HTTP $status): $error${description.fold("")(d => s" ($d)")}")
+  case ClientAuthUnsupported(method: String, supported: List[String])
+    extends OAuthError(s"the authorization server does not accept '$method' client authentication (it lists ${supported.mkString(", ")})")
+  case Insecure(reason: String)
+    extends OAuthError(s"refusing an insecure endpoint: $reason")
 
 /** RFC 7636 Proof Key for Code Exchange, S256 only (OAuth 2.1 drops `plain`). */
 object Pkce:

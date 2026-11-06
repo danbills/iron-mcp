@@ -1,84 +1,146 @@
 package ironmcp
 package auth
 
-import cats.MonadThrow
+import cats.{Monad, MonadThrow}
 import cats.effect.Clock
 import cats.syntax.all.*
+import io.circe.Json
 
-import java.security.PublicKey
+import scala.concurrent.duration.*
 
-/** Validates Bearer JWTs at the Resource Server.
+/** Checks an access token at the resource server and returns its claims.
   *
-  * Enforces cryptographic signature (RS256 via JWKS or HS256 via HMAC secret),
-  * token expiration, optional issuer matching, and **RFC 8707 audience binding**.
+  * Build one with [[TokenValidator.jwks]] (public-key JWTs from the
+  * authorization server's JWKS), [[TokenValidator.sharedSecret]] (HS256, tests
+  * only) or [[Introspection]] (RFC 7662), and add checks with
+  * [[withRevocation]] or [[TokenValidator.layered]].
   */
 trait TokenValidator[F[_]]:
   def validate(token: String): F[Either[AuthError, TokenClaims]]
 
+  /** Also refuses tokens `check` says are revoked. */
+  def withRevocation(check: RevocationCheck[F])(using Monad[F]): TokenValidator[F] =
+    val self = this
+    token =>
+      self.validate(token).flatMap {
+        case Right(claims) => check.revoked(claims).map(_.toLeft(claims))
+        case left          => left.pure[F]
+      }
+
 object TokenValidator:
 
+  /** What makes a JWT an access token rather than some other token from the
+    * same issuer. Without this, an OIDC ID token (same `iss`, and often an
+    * `aud` you would accept) could be presented as an access token.
+    */
+  final case class AccessTokenProfile(name: String, accepts: (Jwt.JwtParts, Json) => Either[String, Unit])
+
+  object AccessTokenProfile:
+    /** RFC 9068: header `typ` is `at+jwt`. */
+    val rfc9068: AccessTokenProfile = AccessTokenProfile(
+      "rfc9068",
+      (parts, _) => Either.cond(parts.typ.contains("at+jwt"), (), s"header typ is '${parts.typ.getOrElse("")}', not at+jwt")
+    )
+
+    /** Keycloak: payload `typ` is `Bearer` (its ID tokens say `ID`, refresh
+      * tokens `Refresh`).
+      */
+    val keycloak: AccessTokenProfile = AccessTokenProfile(
+      "keycloak",
+      (_, payload) =>
+        val typ = payload.hcursor.get[String]("typ").toOption
+        Either.cond(typ.contains("Bearer"), (), s"payload typ is '${typ.getOrElse("")}', not Bearer")
+    )
+
+    /** Either of the above: the default. */
+    val standard: AccessTokenProfile = AccessTokenProfile(
+      "standard",
+      (parts, payload) => rfc9068.accepts(parts, payload).orElse(keycloak.accepts(parts, payload)).leftMap(_ => "neither at+jwt nor a Keycloak Bearer token")
+    )
+
+  /** What every token must satisfy. `issuer` and `audience` have no default:
+    * a validator that does not know whom it trusts and who it is refuses
+    * nothing that matters.
+    *
+    * @param issuer       the exact `iss` to accept
+    * @param audience     the exact `aud` to require: this server's resource URI
+    * @param algorithms   accepted signature algorithms; the token's `alg` must be one
+    * @param profile      what makes the JWT an access token
+    * @param clockSkew    tolerance on `exp`, `nbf` and `iat`
+    * @param maxAge       if set, refuse tokens issued longer ago than this
+    * @param maxTokenBytes tokens larger than this are refused before parsing
+    */
   final case class Config(
-      expectedResource: Option[String] = None,
-      expectedIssuer: Option[String] = None,
-      clockSkewSeconds: Long = 60L
+      issuer: String,
+      audience: String,
+      algorithms: Set[JwsAlgorithm] = JwsAlgorithm.asymmetric,
+      profile: AccessTokenProfile = AccessTokenProfile.standard,
+      clockSkew: FiniteDuration = 60.seconds,
+      maxAge: Option[FiniteDuration] = None,
+      maxTokenBytes: Int = Jwt.DefaultMaxBytes
   )
 
-  /** Creates a validator backed by RS256 and a [[JwksProvider]]. */
-  def rs256[F[_]: {Clock, MonadThrow}](
-      jwks: JwksProvider[F],
-      config: Config = Config()
-  ): TokenValidator[F] = new TokenValidator[F]:
-    def validate(token: String): F[Either[AuthError, TokenClaims]] =
-      Jwt.parse(token) match
-        case Left(err) => MonadThrow[F].pure(Left(err))
-        case Right(parts) =>
-          jwks.key(parts.keyId).flatMap {
-            case None =>
-              MonadThrow[F].pure(Left(AuthError.InvalidSignature(s"Key '${parts.keyId.getOrElse("default")}' not found in JWKS")))
-            case Some(publicKey: PublicKey) =>
-              for
-                now <- Clock[F].realTime.map(_.toSeconds)
-                res = Jwt.verifyRs256(parts, publicKey).flatMap(claims => checkClaims(claims, now, config))
-              yield res
+  object Config:
+    /** The config for tokens issued by `issuer` to the resource `resource`. */
+    def apply(issuer: String, resource: ResourceIdentity): Config = Config(issuer, resource.resource)
+
+  /** JWTs signed with keys from `keys` (usually [[JwksProvider.remote]]). */
+  def jwks[F[_]: {Clock, MonadThrow}](keys: JwksProvider[F], config: Config): TokenValidator[F] =
+    val allowed = config.algorithms.filter(_.isAsymmetric)
+    token =>
+      Jwt.parse(token, config.maxTokenBytes).flatMap(parts => Jwt.algorithm(parts, allowed).map(parts -> _)) match
+        case Left(error) => error.asLeft[TokenClaims].pure[F]
+        case Right((parts, alg)) =>
+          keys.select(parts.keyId, alg).flatMap {
+            case Left(error) => error.asLeft[TokenClaims].pure[F]
+            case Right(key) =>
+              Clock[F].realTime.map(now => Jwt.verify(parts, key.key, Set(alg)).flatMap(_ => checkClaims(parts, now.toSeconds, config)))
           }
 
-  /** Creates a validator backed by HS256 and a shared secret (useful for testing and offline demos). */
-  def hs256[F[_]: {Clock, MonadThrow}](
-      secret: Array[Byte],
-      config: Config = Config()
-  ): TokenValidator[F] = new TokenValidator[F]:
-    def validate(token: String): F[Either[AuthError, TokenClaims]] =
-      for
-        now <- Clock[F].realTime.map(_.toSeconds)
-        res = Jwt.parse(token)
-          .flatMap(parts => Jwt.verifyHs256(parts, secret))
-          .flatMap(claims => checkClaims(claims, now, config))
-      yield res
+  /** HS256 with a shared secret. Whoever can check these tokens can mint them,
+    * so this is for tests and single-process demos, never for tokens from an
+    * authorization server.
+    */
+  def sharedSecret[F[_]: {Clock, MonadThrow}](secret: Array[Byte], config: Config): TokenValidator[F] =
+    val key = Jwt.hmacKey(secret)
+    token =>
+      Clock[F].realTime.map { now =>
+        for
+          parts <- Jwt.parse(token, config.maxTokenBytes)
+          _     <- Jwt.verify(parts, key, Set(JwsAlgorithm.HS256))
+          claims <- checkClaims(parts, now.toSeconds, config)
+        yield claims
+      }
 
-  private def checkClaims(claims: TokenClaims, now: Long, config: Config): Either[AuthError, TokenClaims] =
-    val expCheck = claims.exp match
-      case Some(exp) if exp + config.clockSkewSeconds < now =>
-        Left(AuthError.Expired(exp, now))
-      case _ => Right(())
+  /** Checks locally with `local`, then asks `remote` (usually
+    * [[Introspection]]) as well when `alsoAsk` holds: for example for tokens
+    * carrying an admin scope, where a revocation must take effect at once
+    * rather than when the token expires.
+    */
+  def layered[F[_]: Monad](local: TokenValidator[F], remote: TokenValidator[F])(alsoAsk: TokenClaims => Boolean): TokenValidator[F] =
+    token =>
+      local.validate(token).flatMap {
+        case Right(claims) if alsoAsk(claims) => remote.validate(token).map(_.as(claims))
+        case other                            => other.pure[F]
+      }
 
-    val nbfCheck = claims.nbf match
-      case Some(nbf) if nbf - config.clockSkewSeconds > now =>
-        Left(AuthError.Premature(nbf, now))
-      case _ => Right(())
-
-    val issCheck = config.expectedIssuer match
-      case Some(iss) if claims.iss != iss =>
-        Left(AuthError.IssuerMismatch(iss, claims.iss))
-      case _ => Right(())
-
-    val audCheck = config.expectedResource match
-      case Some(resource) if !claims.aud.contains(resource) =>
-        Left(AuthError.WrongAudience(resource, claims.aud))
-      case _ => Right(())
-
+  /** The claim checks shared by every JWT validator. */
+  private[auth] def checkClaims(parts: Jwt.JwtParts, now: Long, config: Config): Either[AuthError, TokenClaims] =
+    val skew = config.clockSkew.toSeconds
+    val payload = parts.payload.hcursor
     for
-      _ <- expCheck
-      _ <- nbfCheck
-      _ <- issCheck
-      _ <- audCheck
+      _      <- config.profile.accepts(parts, parts.payload).leftMap(AuthError.WrongTokenType(_))
+      _      <- Either.cond(payload.downField("iss").succeeded, (), AuthError.MissingClaim("iss"))
+      _      <- Either.cond(payload.downField("exp").succeeded, (), AuthError.MissingClaim("exp"))
+      claims <- parts.payload.as[TokenClaims].leftMap(e => AuthError.MalformedToken(e.message))
+      _      <- Either.cond(claims.iss == config.issuer, (), AuthError.IssuerMismatch(config.issuer, claims.iss))
+      _      <- Either.cond(claims.aud.contains(config.audience), (), AuthError.WrongAudience(config.audience, claims.aud))
+      _      <- Either.cond(claims.exp + skew >= now, (), AuthError.Expired(claims.exp, now))
+      _      <- claims.nbf.traverse_(nbf => Either.cond(nbf - skew <= now, (), AuthError.Premature(nbf, now)))
+      _      <- claims.iat.traverse_(iat => Either.cond(iat - skew <= now, (), AuthError.IssuedInFuture(iat, now)))
+      _ <- config.maxAge.traverse_ { age =>
+        claims.iat match
+          case None      => Left(AuthError.MissingClaim("iat"))
+          case Some(iat) => Either.cond(now - iat <= age.toSeconds + skew, (), AuthError.TooOld(iat, now))
+      }
     yield claims

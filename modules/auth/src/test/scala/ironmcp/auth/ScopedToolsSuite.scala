@@ -5,7 +5,6 @@ import cats.effect.IO
 import io.circe.{Decoder, Json, parser}
 import io.circe.syntax.*
 import io.github.iltotore.iron.autoRefine
-import ironmcp.http.McpHttp
 import ironmcp.protocol.Implementation
 import ironmcp.schema.JsonSchemaOf
 import ironmcp.server.*
@@ -29,25 +28,28 @@ class ScopedToolsSuite extends CatsEffectSuite:
   private val resource = "http://localhost:5309/mcp"
 
   private val config = McpAuthServer.Config(
-    mcpConfig = McpHttp.Config(path = "/mcp"),
-    serverUrl = "http://localhost:5309",
-    metadata = ProtectedResourceMetadata(resource = resource, authorization_servers = List("https://auth.example.com")),
-    scopePolicy = ToolScopePolicy.Builder.empty
-      .require("read_summary", "reports:read")
-      .require("export_full_data", "reports:read", "reports:export")
-      .build
+    ResourceIdentity.unsafe(resource),
+    List("https://auth.example.com"),
+    AuthPolicy()
+      .tool("read_summary", "reports:read")
+      .tool("export_full_data", "reports:read", "reports:export")
+  )
+
+  private val validator = TokenValidator.sharedSecret[IO](
+    secret,
+    TokenValidator.Config("https://auth.example.com", resource, algorithms = Set(JwsAlgorithm.HS256))
   )
 
   private val routes = McpAuthServer
-    .routesFor(TokenValidator.hs256[IO](secret, TokenValidator.Config(expectedResource = Some(resource))), config) { (_, claims) =>
-      IO.pure(Right(McpServer[IO](Implementation("reports", "1.0.0"), tools = Some(ScopedTools(tools, config.scopePolicy, claims)))))
+    .routesFor(validator, config) { (_, claims) =>
+      IO.pure(Right(McpServer[IO](Implementation("reports", "1.0.0"), tools = Some(ScopedTools(tools, config.policy, Some(claims))))))
     }
     .orNotFound
 
   private def token(scopes: String): String =
     val now = System.currentTimeMillis() / 1000
     Jwt.signHs256(
-      Json.obj("alg" -> "HS256".asJson, "typ" -> "JWT".asJson),
+      Json.obj("alg" -> "HS256".asJson, "typ" -> "at+jwt".asJson),
       Json.obj(
         "iss"   -> "https://auth.example.com".asJson,
         "aud"   -> List(resource).asJson,
@@ -69,7 +71,7 @@ class ScopedToolsSuite extends CatsEffectSuite:
           Header.Raw(CIString("Mcp-Method"), method),
           Header.Raw(CIString("Host"), "localhost:5309")
         )
-        .putHeaders(name.map(n => Header.Raw(CIString("Mcp-Name"), n)).toList)
+        .putHeaders(name.map(n => Header.Raw(CIString("Mcp-Name"), ironmcp.http.McpHeaders.encode(n))).toList)
     )
 
   private def listed(scopes: String): IO[(List[String], String)] =
@@ -91,4 +93,13 @@ class ScopedToolsSuite extends CatsEffectSuite:
     post("reports:read", "tools/call", s"""{"name":"export_full_data","arguments":{},"_meta":$meta}""", Some("export_full_data")).map { res =>
       assertEquals(res.status, Status.Forbidden)
       assert(res.headers.get(CIString("WWW-Authenticate")).exists(_.head.value.contains("insufficient_scope")))
+    }
+
+  test("the provider refuses a call itself, as a second check behind the HTTP layer"):
+    val claims = TokenClaims("https://auth.example.com", Some("alice"), List(resource), exp = Long.MaxValue, scope = Some("reports:read"))
+    val scoped = ScopedTools(tools, config.policy, Some(claims))
+    val meta = ironmcp.protocol.RequestMeta(ironmcp.protocol.LatestProtocolVersion, ironmcp.protocol.ClientCapabilities())
+    scoped.call(ironmcp.protocol.CallToolParams("export_full_data", meta)).map {
+      case r: ironmcp.protocol.CallToolResult => assertEquals(r.isError, Some(true))
+      case other                              => fail(other.toString)
     }
