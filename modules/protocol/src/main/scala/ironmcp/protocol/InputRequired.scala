@@ -19,11 +19,12 @@ final case class InputRequiredResult(
 
 /** The three results a client can hand back. */
 enum ClientCapabilityNeeded:
-  case Sampling, Elicitation, Roots
+  case Sampling, Elicitation, ElicitationUrl, Roots
 
 object ClientCapabilityNeeded:
   extension (self: ClientCapabilityNeeded)
     def satisfiedBy(capabilities: ClientCapabilities): Boolean = self match
       case ClientCapabilityNeeded.Sampling    => capabilities.sampling.isDefined
       case ClientCapabilityNeeded.Elicitation => capabilities.elicitation.isDefined
+      case ClientCapabilityNeeded.ElicitationUrl => capabilities.elicitation.flatMap(_.url).isDefined
       case ClientCapabilityNeeded.Roots       => capabilities.roots.isDefined

@@ -127,3 +127,43 @@ class MrtrSuite extends CatsEffectSuite:
       assertEquals(result.hcursor.get[Boolean]("isError"), Right(true))
       assert(text(result).contains("elicitation"))
     }
+
+/** URL-mode elicitation: the user is sent to a page, and the client must have
+  * declared `elicitation.url` for the tool to ask.
+  */
+class UrlElicitationSuite extends CatsEffectSuite:
+
+  final case class NoArgs() derives Decoder, JsonSchemaOf
+
+  private given RequestStateCodec = RequestStateCodec.hmac(Array.fill(32)(9.toByte))
+
+  private val signIn = McpTool.interactive[NoArgs]("sign_in", "Sends the user to sign in.") { (_, ctx) =>
+    IO.pure(ctx.requestState match
+      case None    => ctx.ask("sign-in")("go" -> Elicit.url("Sign in to continue.", "https://auth.example/authorize", "e-1"))
+      case Some(_) => Interaction.done(if ctx.response("go").exists(_.action == ElicitAction.Accept) then "Went." else "Stayed."))
+  }
+
+  private val server = McpServer[IO](info = Implementation(name = "url", version = "0.1.0"), tools = Some(ToolSet.of(signIn)))
+
+  private def call(elicitation: ElicitationCapability): IO[Json] =
+    val meta   = RequestMeta(protocolVersion = LatestProtocolVersion, clientCapabilities = ClientCapabilities(elicitation = Some(elicitation)))
+    val params = Json.obj("name" -> Json.fromString("sign_in"), "arguments" -> Json.obj(), "_meta" -> meta.asJson)
+    IO.fromEither(Wire.decode(s"""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":${params.noSpaces}}""").left.map(e => AssertionError(e.toString)))
+      .flatMap(server.handle)
+      .flatMap(reply => IO.fromEither(parser.parse(Wire.encode(reply.get))))
+      .map(_.hcursor.downField("result").focus.get)
+
+  test("a client that declared elicitation.url is asked with mode url, the url and the elicitationId"):
+    call(ElicitationCapability(url = Some(io.circe.JsonObject.empty))).map { result =>
+      assertEquals(result.hcursor.get[String]("resultType"), Right("input_required"))
+      val params = result.hcursor.downField("inputRequests").downField("go").downField("params")
+      assertEquals(params.get[String]("mode"), Right("url"))
+      assertEquals(params.get[String]("url"), Right("https://auth.example/authorize"))
+      assertEquals(params.get[String]("elicitationId"), Right("e-1"))
+    }
+
+  test("a client with forms only gets a tool error naming URL elicitation"):
+    call(ElicitationCapability(form = Some(io.circe.JsonObject.empty))).map { result =>
+      assertEquals(result.hcursor.get[Boolean]("isError"), Right(true))
+      assert(result.hcursor.downField("content").downArray.get[String]("text").exists(_.contains("URL elicitation")))
+    }

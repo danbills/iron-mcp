@@ -162,15 +162,19 @@ object McpTool:
   ): CallToolResult | InputRequiredResult =
     val missing = input.inputRequests.toList
       .flatMap(_.values)
-      .flatMap(_.hcursor.get[String]("method").toOption)
-      .flatMap(InputRequest.needs)
+      .flatMap(_.as[InputRequest].toOption)
+      .flatMap(InputRequest.needsOf)
       .distinct
       .filterNot(_.satisfiedBy(capabilities))
     if missing.nonEmpty then
       CallToolResult.failed(
-        s"$name needs the client to support ${missing.map(_.toString.toLowerCase).mkString(" and ")}, which this client did not declare."
+        s"$name needs the client to support ${missing.map(described).mkString(" and ")}, which this client did not declare."
       )
     else input.copy(requestState = input.requestState.map(codec.seal(name, arguments, _)))
+
+  private def described(needed: ClientCapabilityNeeded): String = needed match
+    case ClientCapabilityNeeded.ElicitationUrl => "URL elicitation"
+    case other                                 => other.toString.toLowerCase
 
   private def describe[A, O](
       name: ToolName,

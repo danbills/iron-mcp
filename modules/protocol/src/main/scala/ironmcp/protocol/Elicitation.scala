@@ -22,11 +22,23 @@ object InputRequest:
   /** A form-mode `elicitation/create`. */
   def elicit(params: ElicitFormParams): InputRequest = InputRequest(ElicitMethod, params.asJson)
 
+  /** A URL-mode `elicitation/create`: the user goes to a page (a sign-in, a
+    * payment) rather than filling a form.
+    */
+  def elicitUrl(params: ElicitUrlParams): InputRequest = InputRequest(ElicitMethod, params.asJson)
+
   /** A `sampling/createMessage`: a completion from the client's model. */
   def sample(params: CreateMessageParams): InputRequest = InputRequest(SampleMethod, params.asJson)
 
   /** A `roots/list`: the client's filesystem roots. */
   val listRoots: InputRequest = InputRequest(RootsMethod, Json.obj())
+
+  /** The client capability one embedded request needs: a URL-mode elicitation
+    * needs `elicitation.url`, which a client declares separately from forms.
+    */
+  def needsOf(request: InputRequest): Option[ClientCapabilityNeeded] =
+    val urlMode = request.method == ElicitMethod && request.params.hcursor.get[String]("mode").contains("url")
+    if urlMode then Some(ClientCapabilityNeeded.ElicitationUrl) else needs(request.method)
 
   /** The client capability an embedded request needs, when it is one the spec defines. */
   def needs(method: String): Option[ClientCapabilityNeeded] = method match
@@ -43,6 +55,18 @@ final case class ElicitFormParams(
     requestedSchema: ObjectSchema,
     // Optional on the wire: the spec's own examples sometimes leave it out.
     mode: Option[String] = Some("form")
+) derives Codec.AsObject
+
+/** URL-mode `elicitation/create` params: the client shows `message` and offers
+  * to open `url`, where the interaction happens out of band (the server never
+  * sees what the user types there). `elicitationId` names the interaction, so
+  * the server can match its completion.
+  */
+final case class ElicitUrlParams(
+    message: String,
+    url: String,
+    elicitationId: String,
+    mode: String = "url"
 ) derives Codec.AsObject
 
 enum ElicitAction:

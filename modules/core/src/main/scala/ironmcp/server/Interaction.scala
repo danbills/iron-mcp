@@ -121,6 +121,14 @@ object Elicit:
   def form[R](message: String)(using schema: JsonSchemaOf[R]): InputRequest =
     InputRequest.elicit(ElicitFormParams(message, schema.schema.as[ObjectSchema].getOrElse(ObjectSchema.empty)))
 
+  /** Sends the user to `url` (a sign-in, a consent page) and asks them to come
+    * back. The answer says only whether they agreed to go
+    * ([[ToolContext.response]]); what happened there, the server learns its
+    * own way, by `elicitationId`.
+    */
+  def url(message: String, url: String, elicitationId: String): InputRequest =
+    InputRequest.elicitUrl(ElicitUrlParams(message, url, elicitationId))
+
 object Sample:
 
   /** Asks the client's model to complete one user message. */
