@@ -2,6 +2,7 @@ package ironmcp
 package tasks
 
 import cats.effect.IO
+import cats.effect.std.SecureRandom
 import io.circe.*
 import io.circe.syntax.*
 import io.github.iltotore.iron.*
@@ -43,6 +44,7 @@ class TaskServerSuite extends CatsEffectSuite:
 
   private def setupServer: IO[TaskServer[IO]] =
     for
+      random <- SecureRandom.javaSecuritySecureRandom[IO]
       store <- TaskStore.inMemory[IO](defaultPollIntervalMs = 50L)
       baseServer = McpServer[IO](
         info = serverInfo,
@@ -51,6 +53,7 @@ class TaskServerSuite extends CatsEffectSuite:
       taskServer = TaskServer[IO](
         underlying = baseServer,
         store = store,
+        random = random,
         taskTools = Set("generate_report"),
         defaultPollIntervalMs = 50L
       )

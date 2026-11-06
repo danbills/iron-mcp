@@ -2,6 +2,8 @@ package ironmcp
 package tasks
 
 import cats.effect.IO
+import cats.effect.std.SecureRandom
+import cats.syntax.all.*
 import io.circe.*
 import io.circe.syntax.*
 import io.github.iltotore.iron.*
@@ -34,6 +36,7 @@ class TasksPollingClientSuite extends CatsEffectSuite:
 
   private def setupClientAndServer(): IO[(TasksClient[IO], TaskServer[IO])] =
     for
+      random <- SecureRandom.javaSecuritySecureRandom[IO]
       store <- TaskStore.inMemory[IO](defaultPollIntervalMs = 20L)
       baseServer = McpServer[IO](
         info = Implementation(name = "test-tasks-server", version = "1.0.0"),
@@ -42,6 +45,7 @@ class TasksPollingClientSuite extends CatsEffectSuite:
       taskServer = TaskServer[IO](
         underlying = baseServer,
         store = store,
+        random = random,
         taskTools = Set("slow_work", "failing_work"),
         defaultPollIntervalMs = 20L
       )
@@ -132,3 +136,14 @@ class TasksPollingClientSuite extends CatsEffectSuite:
         case McpClientError.Rpc(err) => assertEquals(err.code, ErrorCode.InvalidParams)
         case other                   => fail(s"Expected McpClientError.Rpc, got $other")
     yield ()
+
+  test("task IDs are 128 random bits, not a timestamp"):
+    for
+      (client, _) <- setupClientAndServer()
+      handles <- List.fill(20)(client.callToolAsTask("slow_work", JsonObject("delayMs" -> 5000.asJson, "message" -> "id".asJson))).sequence
+      ids = handles.collect { case c: CreateTaskResult => c.taskId }
+      _ <- ids.traverse_(client.cancelTask)
+    yield
+      assertEquals(ids.size, 20)
+      ids.foreach(id => assert(id.matches("task-[0-9a-f]{32}"), id))
+      assertEquals(ids.distinct.size, 20)

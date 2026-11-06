@@ -30,6 +30,7 @@ A server designates which tools run asynchronously by wrapping any `ServerHandle
 
 ```scala mdoc
 import cats.effect.IO
+import cats.effect.std.SecureRandom
 import cats.effect.unsafe.implicits.global
 import io.circe.*
 import io.circe.syntax.*
@@ -63,6 +64,7 @@ The server advertises `io.modelcontextprotocol/tasks` in `server/discover` capab
 
 ```scala mdoc
 val serverIO: IO[TaskServer[IO]] = for {
+  random <- SecureRandom.javaSecuritySecureRandom[IO]
   store <- TaskStore.inMemory[IO](defaultPollIntervalMs = 50L)
   baseServer = McpServer[IO](
     info = Implementation(name = "simulation-engine", version = "1.0.0"),
@@ -71,6 +73,7 @@ val serverIO: IO[TaskServer[IO]] = for {
   taskServer = TaskServer[IO](
     underlying = baseServer,
     store = store,
+    random = random,
     taskTools = Set("run_simulation"), // only simulation runs as background task
     defaultPollIntervalMs = 50L
   )

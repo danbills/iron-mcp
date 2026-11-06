@@ -3,6 +3,7 @@ package tasks
 
 import cats.{Applicative, ApplicativeThrow}
 import cats.effect.{Concurrent, Temporal}
+import cats.effect.std.SecureRandom
 import cats.syntax.all.*
 import io.circe.*
 import io.circe.syntax.*
@@ -19,10 +20,16 @@ import ironmcp.tasks.TaskModels.*
   * in capabilities, serves `tasks/get`, `tasks/cancel`, and `tasks/update`, and
   * offloads task-designated tools to background fibers when invoked by task-capable
   * clients, returning `resultType: "task"` immediately.
+  *
+  * A task ID is the only thing `tasks/get` and `tasks/cancel` check, so it is
+  * 128 bits from `random` (a [[SecureRandom]]), never the clock or
+  * `scala.util.Random`. The ID is not bound to a caller: over HTTP with several
+  * users, anyone holding an ID can read or cancel that task.
   */
 final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
     val underlying: ServerHandler[F],
     val store: TaskStore[F],
+    random: SecureRandom[F],
     val taskTools: Set[String] = Set.empty,
     val defaultPollIntervalMs: Long = 1000L,
     val defaultTtlMs: Long = 300000L
@@ -116,9 +123,9 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
     val clientAcceptsTasks = hasTasksCapability(req.params)
 
     if taskTools.contains(toolName) && clientAcceptsTasks then
-      val rnd = scala.util.Random.nextLong() & Long.MaxValue
-      val taskId = f"task-${System.currentTimeMillis()}%x-$rnd%08x"
       for
+        bytes <- random.nextBytes(16)
+        taskId = "task-" + bytes.map(b => f"${b & 0xff}%02x").mkString
         fiber <- Concurrent[F].start {
           underlying.handle(req).flatMap {
             case Some(JsonRpcMessage.Success(_, resJson)) =>
@@ -165,8 +172,9 @@ object TaskServer:
   def apply[F[_]: {Temporal, ApplicativeThrow}](
       underlying: ServerHandler[F],
       store: TaskStore[F],
+      random: SecureRandom[F],
       taskTools: Set[String] = Set.empty,
       defaultPollIntervalMs: Long = 1000L,
       defaultTtlMs: Long = 300000L
   ): TaskServer[F] =
-    new TaskServer[F](underlying, store, taskTools, defaultPollIntervalMs, defaultTtlMs)
+    new TaskServer[F](underlying, store, random, taskTools, defaultPollIntervalMs, defaultTtlMs)
