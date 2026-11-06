@@ -93,3 +93,13 @@ class AppsSuite extends CatsEffectSuite:
     assertEquals(slotted.split("</script>", -1).length, 2, "exactly one closing tag")
     val bodied = UiHtml.inlineScript("<html><BODY><p>x</p></BODY></html>", "go()")
     assertEquals(bodied, "<html><BODY><p>x</p><script>\ngo()\n</script>\n</BODY></html>")
+
+  test("UiHtml inlines styles at the slot, else before </head>, and escapes what would end them"):
+    val css = """a::after { content: "</style>$1"; } /* </STYLE> */"""
+    val slotted = UiHtml.inlineStyle(s"<html><head><title>t</title>${UiHtml.StyleSlot}</head><body></body></html>", css)
+    assert(slotted.contains("""<title>t</title><style>
+a::after { content: "<\/style>$1"; } /* <\/STYLE> */
+</style></head>"""), slotted)
+    assertEquals(slotted.split("</style>", -1).length, 2, "exactly one closing tag")
+    assertEquals(UiHtml.inlineStyle("<html><HEAD></HEAD></html>", "p{}"), "<html><HEAD><style>\np{}\n</style>\n</HEAD></html>")
+    assertEquals(UiHtml.inlineStyle("<p>x</p>", "p{}"), "<style>\np{}\n</style>\n<p>x</p>")
