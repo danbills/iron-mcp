@@ -8,6 +8,7 @@ val http4sVersion     = "0.23.37"
 val otel4sVersion     = "1.1.0"
 val munitVersion      = "1.3.5"
 val munitCeVersion    = "2.2.0"
+val fs2Version        = "3.13.0"
 
 // Publishing metadata. sbt-ci-release forbids `version`, `publishTo`,
 // `publishMavenStyle` and `credentials` here: the version comes from the git
@@ -58,20 +59,37 @@ ThisBuild / scalacOptions ++= Seq(
 // No reflection anywhere in this build: every codec is derived at compile time
 // from a Mirror, so the whole thing survives Scala Native and GraalVM
 // native-image with no reachability metadata.
+
+// The wire types (`ironmcp.protocol`) and the JSON Schema derivation
+// (`ironmcp.schema`): circe and Iron only, so they also build for Scala.js,
+// where MCP Apps Views (`appsView`) use the server's own types.
+lazy val protocol = crossProject(JVMPlatform, NativePlatform, JSPlatform)
+  .crossType(CrossType.Pure)
+  .in(file("modules/protocol"))
+  .settings(
+    name        := "iron-mcp-protocol",
+    description := "The Model Context Protocol's wire types (revision 2026-07-28) and JSON Schema derived from " +
+      "Iron refinement types, for the JVM, Scala Native and Scala.js.",
+    libraryDependencies ++= Seq(
+      "io.github.iltotore" %% "iron"         % ironVersion,
+      "io.github.iltotore" %% "iron-circe"   % ironVersion,
+      "io.circe"           %% "circe-core"   % circeVersion,
+      "io.circe"           %% "circe-parser" % circeVersion,
+      "org.scalameta"      %% "munit"        % munitVersion % Test
+    )
+  )
+
 lazy val core = crossProject(JVMPlatform, NativePlatform)
   .crossType(CrossType.Pure)
   .in(file("modules/core"))
+  .dependsOn(protocol)
   .settings(
     name        := "iron-mcp-core",
     description := "A Model Context Protocol server for Scala 3 — protocol revision 2026-07-28, " +
       "with Iron refinement types, compile-time derived JSON Schema, and no reflection.",
     libraryDependencies ++= Seq(
-      "io.github.iltotore" %% "iron"              % ironVersion,
-      "io.github.iltotore" %% "iron-circe"        % ironVersion,
-      "io.circe"           %% "circe-core"        % circeVersion,
-      "io.circe"           %% "circe-parser"      % circeVersion,
       "org.typelevel"      %% "cats-effect"       % catsEffectVersion,
-      "co.fs2"             %% "fs2-io"            % "3.13.0",
+      "co.fs2"             %% "fs2-io"            % fs2Version,
       "org.scalameta"      %% "munit"             % munitVersion   % Test,
       "org.typelevel"      %% "munit-cats-effect" % munitCeVersion % Test
     )
@@ -171,6 +189,24 @@ lazy val apps = crossProject(JVMPlatform, NativePlatform)
     )
   )
 
+// MCP Apps Views in Scala.js: the View's side of the Apps protocol (JSON-RPC
+// over postMessage with the host), on the same wire types as the server.
+lazy val appsView = (project in file("modules/apps-view"))
+  .enablePlugins(ScalaJSPlugin)
+  .dependsOn(protocol.js)
+  .settings(
+    name        := "iron-mcp-apps-view",
+    description := "MCP Apps (io.modelcontextprotocol/ui) Views in Scala.js: the View side of the Apps protocol, on cats-effect and fs2.",
+    libraryDependencies ++= Seq(
+      "org.scala-js"  %% "scalajs-dom"       % "2.8.1",
+      "io.circe"      %% "circe-scalajs"     % circeVersion,
+      "org.typelevel" %% "cats-effect"       % catsEffectVersion,
+      "co.fs2"        %% "fs2-core"          % fs2Version,
+      "org.scalameta" %% "munit"             % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect" % munitCeVersion % Test
+    )
+  )
+
 lazy val auth = (project in file("modules/auth"))
   .dependsOn(core.jvm, http)
   .settings(
@@ -235,20 +271,9 @@ lazy val nasa = (project in file("modules/nasa"))
     )
   )
 
-lazy val health = (project in file("modules/health"))
-  .dependsOn(core.jvm, apps.jvm)
-  .settings(
-    name := "iron-mcp-health",
-    Compile / mainClass := Some("ironmcp.health.Main"),
-    publish / skip := true,
-    // The MCP Apps example (Handbook §7.4). Tools are programs over HealthOp.
-    libraryDependencies ++= Seq(
-      "org.typelevel" %% "cats-free"         % "2.13.0",
-      "org.scalameta" %% "munit"             % munitVersion   % Test,
-      "org.typelevel" %% "munit-cats-effect" % munitCeVersion % Test
-    )
-  )
-
 lazy val root = (project in file("."))
-  .aggregate(core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, health, otel, auth, tasks.jvm, tasks.native, apps.jvm, apps.native)
+  .aggregate(
+    protocol.jvm, protocol.native, protocol.js, core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, otel, auth,
+    tasks.jvm, tasks.native, apps.jvm, apps.native, appsView
+  )
   .settings(name := "iron-mcp", publish / skip := true)

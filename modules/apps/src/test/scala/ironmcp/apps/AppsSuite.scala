@@ -83,3 +83,13 @@ class AppsSuite extends CatsEffectSuite:
     assert("text/plain; charset=\"utf-8\"".refineOption[MimeTypeC].isDefined)
     assert("text/html;".refineOption[MimeTypeC].isEmpty)
     assert("html".refineOption[MimeTypeC].isEmpty)
+
+  test("UiHtml inlines a script at the slot, else before </body>, and escapes what would end it"):
+    val script = """var s = "</script><!-- x"; var t = "</SCRIPT>"; var cost = "$1";"""
+    val slotted = UiHtml.inlineScript(s"<html><body><div id=app></div>${UiHtml.ScriptSlot}<p>after</p></body></html>", script)
+    assert(slotted.contains("<div id=app></div><script>\n"), slotted)
+    assert(slotted.contains("</script><p>after</p>"), slotted)
+    assert(slotted.contains("""var s = "<\/script><\!-- x"; var t = "<\/SCRIPT>"; var cost = "$1";"""), slotted)
+    assertEquals(slotted.split("</script>", -1).length, 2, "exactly one closing tag")
+    val bodied = UiHtml.inlineScript("<html><BODY><p>x</p></BODY></html>", "go()")
+    assertEquals(bodied, "<html><BODY><p>x</p><script>\ngo()\n</script>\n</BODY></html>")
