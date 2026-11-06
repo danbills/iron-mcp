@@ -110,11 +110,14 @@ lazy val view = project
 
 lazy val server = project.settings(
   Compile / resourceGenerators += Def.task {
-    val linked = (view / Compile / fullLinkJSOutput).value / "main.js"
-    val out    = (Compile / resourceManaged).value / "thermo" / "view.js"
-    IO.copyFile(linked, out)
-    Seq(out)
-  }
+    Def.uncached {   // sbt 2: a task returning files is not cached
+      val _      = (view / Compile / fullLinkJS).value
+      val linked = (view / Compile / fullLinkJS / scalaJSLinkerOutputDirectory).value / "main.js"
+      val out    = (Compile / resourceManaged).value / "thermo" / "view.js"
+      IO.copyFile(linked, out)
+      Seq(out)
+    }
+  }.taskValue
 )
 ```
 
@@ -123,6 +126,8 @@ lazy val server = project.settings(
 val html = UiHtml.inlineScript(resource("thermo/view.html"), resource("thermo/view.js"))
 UiResources.of[IO](UiResource(view, "Thermometer", html))
 ```
+
+The linked script is large: about 3 MB for a View on cats-effect, fs2 and circe, unminified under sbt 2 (danbills/iron-mcp#1).
 
 ### Without Scala.js
 
