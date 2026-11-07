@@ -46,7 +46,7 @@ sbt "demoNative/nativeLink"   # native binary
 sbt "demoNative/mcpb"         # pack it as an MCP Bundle (project/Mcpb.scala; checks tools against the binary)
 ```
 
-Releases are cut locally (no CI): `git tag -a v0.1.0`, then `sbt +publishSigned` and `sbt sonaUpload`; the version comes from the tag via sbt-dynver.
+Releases are cut locally (no CI): `git tag -a v0.1.0`, then `sbt +publishSigned` and `sbt sonaUpload`; the version comes from the tag via sbt-dynver. Every release gets a `CHANGELOG.md` section (Breaking / Added / Fixed) and a GitHub Release with that section as its notes (`gh release create vX.Y.Z --notes-file … --verify-tag`).
 
 ## Coding Style & Naming Conventions
 
