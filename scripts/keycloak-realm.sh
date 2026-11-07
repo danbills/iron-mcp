@@ -5,7 +5,13 @@
 #   KC_URL=https://danarch.tail09c16c.ts.net:10000 \
 #   KC_ADMIN_USER=admin KC_ADMIN_PASSWORD=... \
 #   MCP_RESOURCE=https://reports.example.com/mcp \
+#   HOST_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback \
 #   scripts/keycloak-realm.sh [--machine-jwks https://client.example/jwks.json] [--test-user NAME]
+#
+# MCP_RESOURCE is the MCP server's public URL, exactly as clients reach it: it
+# becomes every token's `aud`, and the server refuses tokens for any other URL.
+# HOST_REDIRECT_URIS (comma-separated; default loopback only) are where the
+# iron-mcp-host client may send users back to: the host's OAuth callback.
 #
 # Nothing secret is stored in the repo. Keycloak generates client secrets; the
 # script prints them once, with the env lines KeycloakIntegrationSuite reads.
@@ -36,7 +42,9 @@ use_jwks_url=false
 [[ -n "$machine_jwks" ]] && use_jwks_url=true
 doc="$(sed -e "s#__MCP_RESOURCE__#${MCP_RESOURCE}#g" \
            -e "s#__MACHINE_USE_JWKS_URL__#${use_jwks_url}#g" \
-           -e "s#__MACHINE_JWKS_URL__#${machine_jwks}#g" "$spec")"
+           -e "s#__MACHINE_JWKS_URL__#${machine_jwks}#g" "$spec" \
+  | jq --arg uris "${HOST_REDIRECT_URIS:-http://127.0.0.1/*,http://localhost/*}" \
+       '(.clients[] | select(.clientId == "iron-mcp-host") | .redirectUris) = ($uris | split(",") | map(select(length > 0)))')"
 
 token="$(curl -fsS "$KC_URL/realms/master/protocol/openid-connect/token" \
   --data-urlencode grant_type=password --data-urlencode client_id=admin-cli \

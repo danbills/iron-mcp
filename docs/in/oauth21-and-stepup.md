@@ -325,16 +325,17 @@ KC_URL=https://danarch.tail09c16c.ts.net:10000 KC_ADMIN_USER=admin KC_ADMIN_PASS
 MCP_RESOURCE=https://reports.example.com/mcp scripts/keycloak-realm.sh --test-user alice
 ```
 
-It creates the realm (ES256 signing keys, 5-minute access tokens, refresh token rotation, brute-force protection, events on), the `mcp:read`, `mcp:export` and `mcp:admin` scopes with their audience mappers, and four clients:
+It creates the realm (ES256 signing keys, 5-minute access tokens, refresh token rotation, brute-force protection, events on), the `mcp:read`, `mcp:export` and `mcp:admin` scopes with their audience mappers, and five clients:
 
 | Client | For | How it authenticates |
 | :--- | :--- | :--- |
-| `iron-mcp-public` | users signing in through an MCP client | public, PKCE S256, loopback redirects, consent, DPoP-bound tokens |
+| `iron-mcp-host` | MCP hosts signing users in (Claude, other Apps hosts) | public, PKCE S256, consent, no DPoP; redirect URIs from `HOST_REDIRECT_URIS` |
+| `iron-mcp-public` | iron-mcp's own `OAuthClient` | public, PKCE S256, loopback redirects, consent, DPoP-bound tokens |
 | `iron-mcp-machine` | the Client Credentials extension | `private_key_jwt` (ES256), DPoP-bound tokens |
 | `iron-mcp-ci` | `KeycloakIntegrationSuite` | client secret, printed once by the script |
 | `iron-mcp-introspector` | the MCP server's RFC 7662 calls | client secret |
 
-No secret is in the repository. The script prints the `IRON_MCP_KC_*` lines that turn on the live suite.
+No secret is in the repository. The script prints the `IRON_MCP_KC_*` lines that turn on the live suite. [Signing in through Keycloak](keycloak-realm.md) walks through it end to end: choosing `MCP_RESOURCE`, the `iron-mcp-host` client for MCP hosts, running the lazy-auth demo, and what each failure means.
 
 ---
 

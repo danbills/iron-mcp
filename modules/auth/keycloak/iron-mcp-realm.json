@@ -25,7 +25,17 @@
       "name": "ecdsa-p256",
       "providerId": "ecdsa-generated",
       "providerType": "org.keycloak.keys.KeyProvider",
-      "config": { "priority": ["200"], "ecdsaEllipticCurveKey": ["P-256"], "ecGenerateCertificate": ["true"] }
+      "config": {
+        "priority": [
+          "200"
+        ],
+        "ecdsaEllipticCurveKey": [
+          "P-256"
+        ],
+        "ecGenerateCertificate": [
+          "true"
+        ]
+      }
     }
   ],
   "clientScopes": [
@@ -33,13 +43,22 @@
       "name": "mcp:read",
       "description": "Read reports and summaries through the MCP server",
       "protocol": "openid-connect",
-      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true", "consent.screen.text": "Read your reports" },
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Read your reports"
+      },
       "protocolMappers": [
         {
           "name": "mcp-audience",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
-          "config": { "included.custom.audience": "__MCP_RESOURCE__", "access.token.claim": "true", "introspection.token.claim": "true", "id.token.claim": "false" }
+          "config": {
+            "included.custom.audience": "__MCP_RESOURCE__",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true",
+            "id.token.claim": "false"
+          }
         }
       ]
     },
@@ -47,13 +66,22 @@
       "name": "mcp:export",
       "description": "Export full datasets through the MCP server",
       "protocol": "openid-connect",
-      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true", "consent.screen.text": "Export all of your data" },
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Export all of your data"
+      },
       "protocolMappers": [
         {
           "name": "mcp-audience",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
-          "config": { "included.custom.audience": "__MCP_RESOURCE__", "access.token.claim": "true", "introspection.token.claim": "true", "id.token.claim": "false" }
+          "config": {
+            "included.custom.audience": "__MCP_RESOURCE__",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true",
+            "id.token.claim": "false"
+          }
         }
       ]
     },
@@ -61,13 +89,22 @@
       "name": "mcp:admin",
       "description": "Administer the MCP server",
       "protocol": "openid-connect",
-      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true", "consent.screen.text": "Administer the MCP server" },
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Administer the MCP server"
+      },
       "protocolMappers": [
         {
           "name": "mcp-audience",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
-          "config": { "included.custom.audience": "__MCP_RESOURCE__", "access.token.claim": "true", "introspection.token.claim": "true", "id.token.claim": "false" }
+          "config": {
+            "included.custom.audience": "__MCP_RESOURCE__",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true",
+            "id.token.claim": "false"
+          }
         }
       ]
     }
@@ -85,8 +122,13 @@
       "serviceAccountsEnabled": false,
       "consentRequired": true,
       "fullScopeAllowed": false,
-      "redirectUris": ["http://127.0.0.1/*", "http://localhost/*"],
-      "webOrigins": ["+"],
+      "redirectUris": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "webOrigins": [
+        "+"
+      ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "dpop.bound.access.tokens": "true",
@@ -94,8 +136,49 @@
         "use.refresh.tokens": "true",
         "post.logout.redirect.uris": "+"
       },
-      "defaultClientScopes": ["basic", "acr"],
-      "optionalClientScopes": ["mcp:read", "mcp:export", "mcp:admin"]
+      "defaultClientScopes": [
+        "basic",
+        "acr"
+      ],
+      "optionalClientScopes": [
+        "mcp:read",
+        "mcp:export",
+        "mcp:admin"
+      ]
+    },
+    {
+      "clientId": "iron-mcp-host",
+      "name": "MCP hosts (Claude, other Apps hosts)",
+      "description": "Public client for an MCP host to sign users in with: authorization code with PKCE S256, consent, no DPoP (most hosts do not send DPoP proofs yet). Its redirect URIs come from HOST_REDIRECT_URIS when the script runs; give the host this client ID.",
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "consentRequired": true,
+      "fullScopeAllowed": false,
+      "redirectUris": [
+        "__HOST_REDIRECT_URIS__"
+      ],
+      "webOrigins": [
+        "+"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "access.token.signed.response.alg": "ES256",
+        "use.refresh.tokens": "true",
+        "post.logout.redirect.uris": "+"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "acr"
+      ],
+      "optionalClientScopes": [
+        "mcp:read",
+        "mcp:export",
+        "mcp:admin"
+      ]
     },
     {
       "clientId": "iron-mcp-machine",
@@ -115,8 +198,13 @@
         "dpop.bound.access.tokens": "true",
         "access.token.signed.response.alg": "ES256"
       },
-      "defaultClientScopes": ["basic"],
-      "optionalClientScopes": ["mcp:read", "mcp:export"]
+      "defaultClientScopes": [
+        "basic"
+      ],
+      "optionalClientScopes": [
+        "mcp:read",
+        "mcp:export"
+      ]
     },
     {
       "clientId": "iron-mcp-ci",
@@ -129,9 +217,16 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": true,
       "fullScopeAllowed": false,
-      "attributes": { "access.token.signed.response.alg": "ES256" },
-      "defaultClientScopes": ["basic"],
-      "optionalClientScopes": ["mcp:read", "mcp:export"]
+      "attributes": {
+        "access.token.signed.response.alg": "ES256"
+      },
+      "defaultClientScopes": [
+        "basic"
+      ],
+      "optionalClientScopes": [
+        "mcp:read",
+        "mcp:export"
+      ]
     },
     {
       "clientId": "iron-mcp-introspector",
