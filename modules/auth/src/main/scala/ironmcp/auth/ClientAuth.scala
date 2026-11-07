@@ -14,6 +14,7 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets.UTF_8
 import java.security.{PrivateKey, SecureRandom}
 import java.util.Base64
+import scala.concurrent.duration.*
 
 /** How a client proves who it is at a token, introspection or revocation
   * endpoint (RFC 6749 §2.3, RFC 7523 §2.2, OAuth 2.1 §2.4).
@@ -62,6 +63,9 @@ object ClientAuth:
     * an intercepted assertion is good for one minute at one server.
     *
     * @param keyId the `kid` of the public key registered for the client
+    * @param backdate how far before now `iat` is set, for servers that refuse
+    *                 an `iat` a moment in their future (Keycloak); `exp` still
+    *                 counts from now
     */
   final case class PrivateKeyJwt(
       clientId: String,
@@ -69,7 +73,8 @@ object ClientAuth:
       algorithm: JwsAlgorithm = JwsAlgorithm.ES256,
       keyId: Option[String] = None,
       lifetimeSeconds: Long = 60,
-      audience: PrivateKeyJwt.Audience = PrivateKeyJwt.Audience.Issuer
+      audience: PrivateKeyJwt.Audience = PrivateKeyJwt.Audience.Issuer,
+      backdate: FiniteDuration = 5.seconds
   ) extends ClientAuth:
     val method = "private_key_jwt"
     def credentials[F[_]: Sync](issuer: String, endpoint: String) =
@@ -84,7 +89,7 @@ object ClientAuth:
             "iss" -> clientId.asJson,
             "sub" -> clientId.asJson,
             "aud" -> aud.asJson,
-            "iat" -> now.toSeconds.asJson,
+            "iat" -> (now.toSeconds - backdate.toSeconds).asJson,
             "exp" -> (now.toSeconds + lifetimeSeconds).asJson,
             "jti" -> Base64.getUrlEncoder.withoutPadding.encodeToString(jti).asJson
           )

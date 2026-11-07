@@ -42,14 +42,19 @@ object TokenValidator:
       (parts, _) => Either.cond(parts.typ.contains("at+jwt"), (), s"header typ is '${parts.typ.getOrElse("")}', not at+jwt")
     )
 
-    /** Keycloak: payload `typ` is `Bearer` (its ID tokens say `ID`, refresh
-      * tokens `Refresh`).
+    /** Keycloak: payload `typ` is `Bearer`, or `DPoP` for a DPoP-bound token
+      * (its ID tokens say `ID`, refresh tokens `Refresh`). A `DPoP` token
+      * must carry the `cnf.jkt` it is bound to.
       */
     val keycloak: AccessTokenProfile = AccessTokenProfile(
       "keycloak",
       (_, payload) =>
-        val typ = payload.hcursor.get[String]("typ").toOption
-        Either.cond(typ.contains("Bearer"), (), s"payload typ is '${typ.getOrElse("")}', not Bearer")
+        val c   = payload.hcursor
+        val typ = c.get[String]("typ").toOption
+        typ match
+          case Some("Bearer") => Right(())
+          case Some("DPoP")   => Either.cond(c.downField("cnf").get[String]("jkt").isRight, (), "payload typ is DPoP but the token has no cnf.jkt")
+          case other          => Left(s"payload typ is '${other.getOrElse("")}', not Bearer or DPoP")
     )
 
     /** Either of the above: the default. */

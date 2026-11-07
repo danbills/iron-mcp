@@ -241,6 +241,25 @@
       "fullScopeAllowed": false,
       "defaultClientScopes": [],
       "optionalClientScopes": []
+    },
+    {
+      "clientId": "__MCP_RESOURCE__",
+      "name": "MCP server (RFC 8707 resource)",
+      "description": "The MCP server as an RFC 8707 resource (needs --features=resource-indicators). clientId is the URL on purpose: Keycloak narrows aud to this clientId. Obtains no tokens.",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": true,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "attributes": {
+        "resource_url": "__MCP_RESOURCE__"
+      },
+      "defaultClientScopes": [],
+      "optionalClientScopes": []
     }
   ]
 }

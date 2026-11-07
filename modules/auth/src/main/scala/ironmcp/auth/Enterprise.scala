@@ -80,8 +80,15 @@ object EnterpriseAuth:
 
   /** What the client presents to the IdP. */
   enum Subject(val token: String, val tokenType: String):
-    case IdToken(value: String) extends Subject(value, "urn:ietf:params:oauth:token-type:id_token")
-    case RefreshToken(value: String) extends Subject(value, "urn:ietf:params:oauth:token-type:refresh_token")
+    case IdToken(value: String) extends Subject(value, Subject.IdTokenType)
+    /** After SAML sign-in: the refresh token from [[samlToRefreshToken]]. */
+    case RefreshToken(value: String) extends Subject(value, Subject.RefreshTokenType)
+    override def toString = s"Subject(${tokenType.stripPrefix("urn:ietf:params:oauth:token-type:")}, ***)"
+
+  object Subject:
+    val IdTokenType      = "urn:ietf:params:oauth:token-type:id_token"
+    val RefreshTokenType = "urn:ietf:params:oauth:token-type:refresh_token"
+    val Saml2Type        = "urn:ietf:params:oauth:token-type:saml2"
 
   /** @param idpIssuer        the enterprise IdP's issuer
     * @param idpTokenEndpoint where it does token exchange
@@ -91,7 +98,9 @@ object EnterpriseAuth:
     *                         Metadata Document URL with `Public` when not pre-registered
     * @param resource         the MCP server's resource identifier
     * @param requireProfile   refuse an authorization server that does not
-    *                         advertise the ID-JAG grant profile
+    *                         advertise the ID-JAG grant profile. Keycloak 26.7
+    *                         redeems ID-JAGs without advertising it: set
+    *                         `false` for it, knowingly
     */
   final case class Config(
       idpIssuer: String,
@@ -102,6 +111,14 @@ object EnterpriseAuth:
       resource: String,
       requireProfile: Boolean = true
   )
+
+  object Config:
+    /** From discovery ([[OAuthClient.discover]]): the authorization server and
+      * resource come from the MCP server's own metadata, so they cannot drift
+      * from what it actually trusts.
+      */
+    def discovered(discovered: Discovered, idpIssuer: String, idpTokenEndpoint: String, idpClient: ClientAuth, asClient: ClientAuth): Config =
+      Config(idpIssuer, idpTokenEndpoint, idpClient, discovered.authorizationServer, asClient, discovered.resource.resource)
 
   /** Step 1: an ID-JAG from the IdP. */
   def requestIdJag[F[_]: Async](http: Client[F], config: Config, subject: Subject, scopes: Set[String]): F[TokenResponse] =
@@ -125,6 +142,49 @@ object EnterpriseAuth:
           OAuthError.UnexpectedTokenType(r.issued_token_type.getOrElse("(no issued_token_type)"))
         )
       }
+
+  /** After SAML sign-in (draft-ietf-oauth-identity-assertion-authz-grant
+    * §4.5): the SAML 2.0 assertion (base64url) for a refresh token at the IdP,
+    * to use as [[Subject.RefreshToken]] for every later ID-JAG.
+    */
+  def samlToRefreshToken[F[_]: Async](http: Client[F], config: Config, samlAssertion: String): F[Subject.RefreshToken] =
+    OAuthEndpoint
+      .post[F, TokenResponse](
+        http,
+        config.idpIssuer,
+        config.idpTokenEndpoint,
+        config.idpClient,
+        List(
+          "grant_type"           -> TokenExchange,
+          "requested_token_type" -> Subject.RefreshTokenType,
+          "subject_token"        -> samlAssertion,
+          "subject_token_type"   -> Subject.Saml2Type
+        )
+      )
+      .flatMap { r =>
+        (r.issued_token_type, r.refresh_token.orElse(Option.when(r.issued_token_type.contains(Subject.RefreshTokenType))(r.access_token))) match
+          case (Some(Subject.RefreshTokenType), Some(token)) => Async[F].pure(Subject.RefreshToken(token))
+          case (other, _) => Async[F].raiseError(OAuthError.UnexpectedTokenType(other.getOrElse("(no issued_token_type)")))
+      }
+
+  /** What a client can check of an ID-JAG before handing it on, without the
+    * IdP's keys: that it is an ID-JAG, from the IdP it asked, for the
+    * authorization server and resource it means to reach, and not expired.
+    * A misconfigured or compromised IdP cannot route the user's grant to a
+    * server the client did not choose.
+    */
+  def checkIdJag(config: Config, idJag: String, now: Long): Either[OAuthError, Unit] =
+    def bad(why: String) = OAuthError.UnexpectedTokenType(s"ID-JAG: $why")
+    for
+      parts <- Jwt.parse(idJag).leftMap(e => bad(e.description))
+      _     <- Either.cond(parts.typ.contains(IdJagTyp), (), bad(s"header typ is ${parts.typ.getOrElse("absent")}"))
+      c      = parts.payload.hcursor
+      _     <- Either.cond(c.get[String]("iss").toOption.contains(config.idpIssuer), (), bad("not from the IdP that was asked"))
+      aud    = c.get[String]("aud").map(List(_)).orElse(c.get[List[String]]("aud")).getOrElse(Nil)
+      _     <- Either.cond(aud.contains(config.authorizationServer.issuer), (), bad(s"addressed to ${aud.mkString(" ")}, not ${config.authorizationServer.issuer}"))
+      _     <- Either.cond(c.get[String]("resource").toOption.forall(_ == config.resource), (), bad("for another resource"))
+      _     <- Either.cond(c.get[Long]("exp").toOption.exists(_ > now), (), bad("expired"))
+    yield ()
 
   /** Step 2: the ID-JAG for an access token at the MCP server's authorization server. */
   def redeem[F[_]: Async](http: Client[F], config: Config, idJag: String, dpop: Option[Dpop.Key] = None): F[TokenResponse] =
@@ -153,6 +213,8 @@ object EnterpriseAuth:
       for
         s     <- subject
         jag   <- requestIdJag(http, config, s, scopes)
+        now   <- Async[F].realTime.map(_.toSeconds)
+        _     <- checkIdJag(config, jag.access_token, now).liftTo[F]
         token <- redeem(http, config, jag.access_token, dpop)
       yield token
 
