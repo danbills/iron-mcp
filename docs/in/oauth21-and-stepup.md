@@ -12,7 +12,7 @@
 | :--- | :--- |
 | A genuine token minted for another service is replayed here (the downstream trap) | `aud` must equal this server's resource URI (RFC 8707); `TokenValidator.Config` has no default for it |
 | A token from another realm or IdP | `iss` must equal the configured issuer |
-| An OIDC ID token, or a refresh token, presented as an access token | the token-type profile: `typ: at+jwt` (RFC 9068), or Keycloak's payload `typ: Bearer` |
+| An OIDC ID token, or a refresh token, presented as an access token | the token-type profile: `typ: at+jwt` (RFC 9068), or Keycloak's payload `typ: Bearer` (or `DPoP` with `cnf.jkt`) |
 | `alg: none`; HS256 "signed" with the server's RSA public key (algorithm confusion) | the algorithm allowlist comes from config, never from the token; each key is tied to its type, curve and declared `alg` |
 | ECDSA signatures with `r = 0` or `s = 0` (CVE-2022-21449) | refused before the JDK sees them |
 | Weak keys; encryption keys in the JWKS | RSA under 2048 bits, `use: enc`, `key_ops` without `verify`, private JWKs, and EC points off their curve are dropped |
@@ -139,7 +139,7 @@ Anonymous callers see and call the `public` tools. The first call to a protected
 | Setting | Default |
 | :--- | :--- |
 | `algorithms` | `RS256 RS384 RS512 PS256 PS384 PS512 ES256 ES384 EdDSA`. HS256 is never accepted with keys from a JWKS. |
-| `profile` | `AccessTokenProfile.standard`: `typ: at+jwt`, or Keycloak's payload `typ: Bearer`. Use `.rfc9068` to insist on the former. |
+| `profile` | `AccessTokenProfile.standard`: `typ: at+jwt`, or Keycloak's payload `typ: Bearer` (or `DPoP` with `cnf.jkt`). Use `.rfc9068` to insist on the former. |
 | `clockSkew` | 60 s, on `exp`, `nbf` and `iat` |
 | `maxAge` | none; set it to refuse tokens issued too long ago |
 | `maxTokenBytes` | 8 KiB |
@@ -256,9 +256,49 @@ def enterprise(http: Client[IO], server: AuthorizationServerMetadata, idToken: I
   StepUpClient.create[IO](EnterpriseAuth.authorizer[IO](http, config, idToken.map(EnterpriseAuth.Subject.IdToken(_))))
 ```
 
-The MCP server needs nothing new: the access token is an ordinary one. A Scala authorization server can check incoming ID-JAGs with `EnterpriseAuth.verifyIdJag` (type `oauth-id-jag+jwt`, a trusted IdP, `aud` its own issuer, `client_id` the authenticated client, `resource` one it serves, single use).
+The MCP server needs nothing new: the access token is an ordinary one. Before the client hands an ID-JAG on, `EnterpriseAuth.checkIdJag` makes sure it is an ID-JAG, from the IdP that was asked, addressed to the chosen authorization server and resource, and unexpired, so a misconfigured IdP cannot route the user's grant elsewhere. After SAML sign-in, `EnterpriseAuth.samlToRefreshToken` turns the assertion into the refresh token that `Subject.RefreshToken` presents from then on. `EnterpriseAuth.Config.discovered` builds the config from the MCP server's own metadata.
 
-Keycloak 26.7 does not issue ID-JAGs or advertise the grant profile, so this flow is tested against an in-memory IdP and authorization server (`EnterpriseSuite`).
+A Scala authorization server can check incoming ID-JAGs with `EnterpriseAuth.verifyIdJag` (type `oauth-id-jag+jwt`, a trusted IdP, `aud` its own issuer, `client_id` the authenticated client, `resource` one it serves, single use).
+
+#### The IdP side: `IdJagIssuer`
+
+Few identity providers issue ID-JAGs yet (Keycloak 26.7 redeems them but cannot issue them). `IdJagIssuer` is the token-exchange endpoint that does: it trusts the company SSO's ID tokens by its JWKS, applies the administrators' rules, and signs ID-JAGs with its own key.
+
+```scala mdoc:silent
+def corporateIdp(ssoKeys: JwksProvider[IO], signer: IdJagIssuer.Signer, replay: ReplayCache[IO], desktopSecret: ClientCredential.Secret) =
+  val issuer  = "https://idp.example.com"
+  val reports = "https://auth.reports.example.com" // the MCP server's authorization server
+  IdJagIssuer.routes[IO](
+    IdJagIssuer.Config[IO](
+      issuer = issuer,
+      tokenEndpoint = s"$issuer/token",
+      signer = signer,
+      ssoIssuer = "https://login.example.com",
+      ssoKeys = ssoKeys,
+      clients = ClientRegistry[IO](Map("desktop-app" -> desktopSecret), issuer, s"$issuer/token", replay),
+      policy = IdJagIssuer.Policy.rules[IO](
+        IdJagIssuer.Rule("desktop-app", reports, resource.resource, IdJagIssuer.Who.Groups(Set("engineering")), Set("mcp:read")),
+        IdJagIssuer.Rule("desktop-app", reports, resource.resource, IdJagIssuer.Who.Groups(Set("finance")), Set("mcp:read", "mcp:export"), acr = Set("mfa"))
+      ),
+      audit = AuthAudit.jsonLines[IO](IO.println)
+    )
+  )
+```
+
+It serves `POST /token`, `GET /jwks` (the key authorization servers trust) and RFC 8414 metadata. What it refuses:
+
+| Attempt | Answer |
+| :--- | :--- |
+| No client authentication, a wrong secret, a replayed `private_key_jwt` assertion, or a client using a method it was not registered with | `invalid_client` (401) |
+| Two client authentication methods in one request, a repeated parameter, an `actor_token` | `invalid_request` |
+| An access, refresh or ID-JAG token from the SSO instead of an ID token; an ID token for another client (`aud`/`azp`), expired, or older than `maxIdTokenAge` | `invalid_grant` |
+| A user, client, authorization server or resource no rule covers | `invalid_target`, the same sentence every time, so a client cannot map the policy |
+| Scopes outside the rules | narrowed; `invalid_scope` when none is left |
+| A sign-in without the `acr` or recency (`maxAuthAge`) a rule asks for | `insufficient_user_authentication` (RFC 9470), so the client can send the user back for MFA |
+
+`Who` matches by `sub`, group claim, verified email domain, or any predicate. Several matching rules grant the union of their scopes. A rule's `clientIdAtServer` names the client as the authorization server knows it. The ID-JAG copies `acr`, `amr`, `auth_time` and, if verified, `email`. Every decision goes to the `AuthAudit` with the user, client, resource and scopes, and never a token. `ClientRegistry` is the server side of `ClientAuth` for any Scala token endpoint. `ClientCredential.Secret.of` keeps only a SHA-256 (compared in constant time) and refuses secrets under 32 characters. `Pem.privateKeyFile` and `Pem.publicKeyFile` load the keys.
+
+`KeycloakEnterpriseSuite` runs the whole flow against live Keycloak. A user signs in to the `iron-mcp-corp` realm (the company SSO). The in-process `IdJagIssuer` checks the ID token and the policy. Keycloak's `iron-mcp` realm redeems the ID-JAG (its experimental `identity-assertion-jwt` feature), and the MCP server's validator accepts the token. Keycloak also refuses a replayed ID-JAG, one signed by an untrusted key, and a wrong client secret. `EnterpriseSuite` and `IdJagIssuerSuite` cover the rest offline.
 
 ### Client ID Metadata Documents
 
@@ -316,7 +356,7 @@ Inside an interactive tool, `auth.withToken(claims, ctx)(token => ...)` runs wit
 
 ## 10. Keycloak
 
-Keycloak does not act on the RFC 8707 `resource` parameter. A token's `aud` comes from the realm's **Audience mappers**, so each MCP client scope has one that adds the MCP resource URI. Then Keycloak's tokens validate like any other issuer's: `TokenValidator.Config(issuer, resource)` with the realm URL as issuer, and the default profile accepts Keycloak's `typ: Bearer` while refusing its ID and refresh tokens.
+A token's `aud` comes from the realm's **Audience mappers**, so each MCP client scope has one that adds the MCP resource URI. Keycloak 26.7 started with `--features=resource-indicators` also acts on the RFC 8707 `resource` parameter. It accepts the URL only when a client declares it as its `resource_url`, and then narrows `aud` to that client's `clientId`. The realm therefore has a client whose `clientId` *is* the MCP URL, and a token requested with `resource` names exactly the MCP server and nothing else. Keycloak's tokens validate like any other issuer's: `TokenValidator.Config(issuer, resource)` with the realm URL as issuer. The default profile accepts Keycloak's payload `typ: Bearer`, and `typ: DPoP` when the token carries `cnf.jkt`, while refusing its ID and refresh tokens.
 
 The `iron-mcp` realm is code: `modules/auth/keycloak/iron-mcp-realm.json`, applied with
 
@@ -334,6 +374,15 @@ It creates the realm (ES256 signing keys, 5-minute access tokens, refresh token 
 | `iron-mcp-machine` | the Client Credentials extension | `private_key_jwt` (ES256), DPoP-bound tokens |
 | `iron-mcp-ci` | `KeycloakIntegrationSuite` | client secret, printed once by the script |
 | `iron-mcp-introspector` | the MCP server's RFC 7662 calls | client secret |
+| *the MCP URL* | stands for the MCP server as an RFC 8707 resource (`resource_url`) | obtains no tokens |
+
+`scripts/keycloak-enterprise.sh` adds Enterprise-Managed Authorization on top (Keycloak with `--features=identity-assertion-jwt`). It creates the `iron-mcp-corp` realm as the company SSO: client `corp-desktop` with a `groups` claim, and users `ada` (in `engineering`) and `grace` (not). The `iron-mcp` realm gets the `corp-idjag` identity provider, which trusts the ID-JAG issuer's public key pinned to ES256 and refuses reused assertions. Access tokens live no longer than the ID-JAG. It also adds client `iron-mcp-enterprise`, which redeems ID-JAGs, links ada and grace to their corp identities, and, given `MACHINE_JWKS`, registers `iron-mcp-machine`'s public keys inline.
+
+Keycloak 26.7 quirks, each found against the live realm:
+
+- **`iat` has no tolerance.** A JWT issued a moment in Keycloak's future is refused ("Token was issued in the future"), whatever clock skew is configured. `IdJagIssuer.Config.backdate` and `ClientAuth.PrivateKeyJwt.backdate` (5 s by default) set `iat` slightly in the past; `exp` still counts from now. Keep the hosts on NTP.
+- **`resource` without a refresh token crashes.** With `resource-indicators`, a `resource` on a grant that issues no refresh token (client credentials) fails with HTTP 500. Keycloak writes `resource` into a refresh token that does not exist. The script gives `iron-mcp-machine` refresh tokens (`client_credentials.use_refresh_token`), which it cannot use without its signed assertion.
+- **The ID-JAG grant profile is not advertised.** Set `EnterpriseAuth.Config(requireProfile = false)` for Keycloak, and only for it.
 
 No secret is in the repository. The script prints the `IRON_MCP_KC_*` lines that turn on the live suite. [Signing in through Keycloak](keycloak-realm.md) walks through it end to end: choosing `MCP_RESOURCE`, the `iron-mcp-host` client for MCP hosts, running the lazy-auth demo, and what each failure means.
 

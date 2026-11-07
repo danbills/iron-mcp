@@ -72,6 +72,13 @@ class TokenValidatorSuite extends CatsEffectSuite:
       assert(k.isRight, k.toString)
       assert(a.isRight, a.toString)
 
+  test("a DPoP-bound Keycloak token (payload typ DPoP) passes with its cnf.jkt, and is refused without one"):
+    val bound = List("typ" -> "DPoP".asJson, "cnf" -> Json.obj("jkt" -> "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I".asJson))
+    for
+      ok <- rsaValidator.validate(rs(claims(extra = bound), typ = Some("JWT")))
+      _  <- refused(rsaValidator, rs(claims(extra = List("typ" -> "DPoP".asJson)), typ = Some("JWT")), "token_type")
+    yield assert(ok.isRight, ok.toString)
+
   test("alg confusion: HS256 signed with the RSA public key is refused by a public-key validator"):
     val publicBytes = rsa.getPublic.getEncoded
     val forged = Jwt.sign(JwsAlgorithm.HS256, Jwt.hmacKey(publicBytes), io.circe.JsonObject("kid" -> "k1".asJson, "typ" -> "at+jwt".asJson), claims())
