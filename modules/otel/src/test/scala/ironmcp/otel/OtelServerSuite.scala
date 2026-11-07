@@ -39,7 +39,12 @@ class OtelServerSuite extends CatsEffectSuite:
     IO.raiseError[String](new RuntimeException("Upstream archive service returned 503."))
   }
 
-  private def setup(): IO[(OtelServer[IO], InMemorySpanExporter, InMemoryMetricReader)] =
+  private val defaultServer = McpServer[IO](
+    info = Implementation(name = "otel-test", version = "1.0.0"),
+    tools = Some(ToolSet.of(getForecast, searchIncidents, checkDependency))
+  )
+
+  private def setup(server: McpServer[IO] = defaultServer): IO[(OtelServer[IO], InMemorySpanExporter, InMemoryMetricReader)] =
     for
       spanExporter <- IO(InMemorySpanExporter.create())
       metricReader <- IO(InMemoryMetricReader.create())
@@ -64,10 +69,6 @@ class OtelServerSuite extends CatsEffectSuite:
       )
       otelJava  <- OtelJava.fromJOpenTelemetry[IO](jOtel)
       telemetry <- McpTelemetry.fromOtelJava[IO](otelJava)
-      server = McpServer[IO](
-        info = Implementation(name = "otel-test", version = "1.0.0"),
-        tools = Some(ToolSet.of(getForecast, searchIncidents, checkDependency))
-      )
       otelServer <- OtelServer.instrument(server, telemetry)
     yield (otelServer, spanExporter, metricReader)
 
@@ -187,3 +188,48 @@ class OtelServerSuite extends CatsEffectSuite:
 
   private def findMetric(metrics: List[MetricData], name: String): Option[MetricData] =
     metrics.find(_.getName == name)
+
+  // A provider that throws, rather than a tool (whose failure is an isError result).
+  private val failingResources = new ResourceProvider[IO]:
+    def list(params: ListResourcesParams): IO[ListResourcesResult] = IO.raiseError(RuntimeException("db password is hunter2"))
+    def read(params: ReadResourceParams): IO[ReadResourceResult | InputRequiredResult] =
+      IO.raiseError(McpException.resourceNotFound(params.uri))
+
+  private def request(method: String, params: Json): JsonRpcMessage.Request =
+    new JsonRpcMessage.Request(RequestId.Num(9L), method.assume, Some(params.deepMerge(Json.obj("_meta" -> meta))))
+
+  test("recovering, an unexpected exception is on the span, goes to onUnhandled, and replies -32603"):
+    for
+      seen <- IO.ref(List.empty[Throwable])
+      server = McpServer[IO](
+        info = Implementation(name = "otel-test", version = "1.0.0"),
+        resources = Some(failingResources),
+        onUnhandled = Some((_, error) => seen.update(error :: _))
+      )
+      (otel, spanExporter, _) <- setup(server)
+      reply <- otel.handleRecovering(request("resources/list", Json.obj()))
+      spans = spanExporter.getFinishedSpanItems.asScala.toList
+      hooked <- seen.get
+    yield
+      reply match
+        case Some(JsonRpcMessage.Failure(_, error)) => assertEquals(error.code, ErrorCode.InternalError)
+        case other                                 => fail(s"expected a -32603 reply, got $other")
+      assertEquals(spans.map(_.getEvents.asScala.map(_.getName).toList), List(List("exception")))
+      assertEquals(hooked.map(_.getMessage), List("db password is hunter2"))
+
+  test("recovering, an McpException is the reply and does not reach onUnhandled"):
+    for
+      seen <- IO.ref(List.empty[Throwable])
+      server = McpServer[IO](
+        info = Implementation(name = "otel-test", version = "1.0.0"),
+        resources = Some(failingResources),
+        onUnhandled = Some((_, error) => seen.update(error :: _))
+      )
+      (otel, _, _) <- setup(server)
+      reply <- otel.handleRecovering(request("resources/read", Json.obj("uri" -> Json.fromString("file:///nope"))))
+      hooked <- seen.get
+    yield
+      reply match
+        case Some(JsonRpcMessage.Failure(_, error)) => assertEquals(error.code, ErrorCode.ResourceNotFound)
+        case other                                 => fail(s"expected a -32002 reply, got $other")
+      assertEquals(hooked, Nil)

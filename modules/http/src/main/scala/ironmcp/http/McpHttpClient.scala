@@ -13,6 +13,8 @@ import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.headers.{`Content-Type`, `WWW-Authenticate`}
 import org.typelevel.ci.CIString
+import org.typelevel.log4cats.Logger
+import org.typelevel.log4cats.noop.NoOpLogger
 
 /** The client side of Streamable HTTP: one POST per message to the MCP
   * endpoint, with the headers the binding mirrors from the body.
@@ -106,9 +108,15 @@ object McpHttpClient:
   def transport[F[_]: Concurrent](client: Client[F], endpoint: Uri): ClientTransport[F] =
     transport(client, endpoint, Concurrent[F].pure(Headers.empty), _ => Concurrent[F].unit)
 
-  /** An ember client for `endpoint`, for callers that do not have an http4s client already. */
-  def ember[F[_]: {Async, Network}](endpoint: Uri, headers: Option[F[Headers]] = None): Resource[F, ClientTransport[F]] =
-    EmberClientBuilder.default[F].build.map(client =>
+  /** An ember client for `endpoint`, for callers that do not have an http4s
+    * client already. `logger` gets Ember's own log; `None` discards it.
+    */
+  def ember[F[_]: {Async, Network}](
+      endpoint: Uri,
+      headers: Option[F[Headers]] = None,
+      logger: Option[Logger[F]] = None
+  ): Resource[F, ClientTransport[F]] =
+    EmberClientBuilder.default[F].withLogger(logger.getOrElse(NoOpLogger[F])).build.map(client =>
       transport(client, endpoint, headers.getOrElse(Async[F].pure(Headers.empty)), _ => Async[F].unit)
     )
 

@@ -2,6 +2,23 @@
 
 All notable changes to iron-mcp. Versions follow [Semantic Versioning](https://semver.org); before 1.0, a minor version may break the API, and such changes are listed under **Breaking**. Artifacts are on Maven Central as `io.github.danbills:iron-mcp-*`.
 
+## [0.8.0] — 2026-11-07
+
+Exceptions a server turns into `-32603 internal error` are no longer lost: they go to a hook, and to the OpenTelemetry span.
+
+### Breaking
+- New parameters change the binary signatures of `McpServer`, `TaskServer`, `TaskServer.apply`, `McpHttp.serve` and `McpHttpClient.ember`. Source stays compatible: each new parameter has a default.
+
+### Added
+- **`OnUnhandled`** (core): `McpServer(onUnhandled = ...)` and `TaskServer(onUnhandled = ...)` receive the message and the exception whenever a handler throws something other than an `McpException`. The client still gets `-32603` with no detail; a failing hook does not lose the reply.
+- **`UnhandledLog(logger)`** (http): an `OnUnhandled` that logs to a log4cats `Logger`: method, request id and stack trace, never the params.
+- `logger` on `McpHttp.serve` and `McpHttpClient.ember`: Ember's own log goes to a log4cats `Logger` you pass, or nowhere (the default). `iron-mcp-http` now declares `log4cats-core` directly; http4s already brought it in.
+
+### Fixed
+- `OtelServer` never recorded exceptions on the path the transports use: it called the server's recovering handler, which had already turned the exception into a reply. The exception is now on the span (`recordException`, error status) before it becomes `-32603`.
+- A background task that threw stored the exception's message as its error, where `tasks/get` showed it to the client. It now fails with `-32603 internal error`, and the exception goes to `onUnhandled`.
+- Test runs no longer print SLF4J's "Failed to load class StaticLoggerBinder" warning (`slf4j-nop` in test scope only; published POMs leave the logging backend to the application).
+
 ## [0.7.0] — 2026-11-07
 
 Both `ext-auth` extensions (OAuth Client Credentials, Enterprise-Managed Authorization) run end to end against a live Keycloak 26.7.
@@ -74,6 +91,7 @@ Both `ext-auth` extensions (OAuth Client Credentials, Enterprise-Managed Authori
 
 First release: the MCP 2026-07-28 protocol on a cross-platform Scala 3 core (JVM and Scala Native), with JSON Schema derived at compile time from Iron constraints, and the stdio transport.
 
+[0.8.0]: https://github.com/danbills/iron-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/danbills/iron-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/danbills/iron-mcp/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/danbills/iron-mcp/compare/v0.4.0...v0.5.0

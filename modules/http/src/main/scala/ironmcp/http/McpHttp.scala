@@ -19,6 +19,8 @@ import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.headers.`Content-Type`
 import org.http4s.server.Server
 import org.typelevel.ci.CIString
+import org.typelevel.log4cats.Logger
+import org.typelevel.log4cats.noop.NoOpLogger
 
 import java.nio.charset.StandardCharsets.UTF_8
 
@@ -144,14 +146,19 @@ object McpHttp:
 
   /** Binds the routes to `host:port`. The default host is loopback, as the spec
     * advises for a local server.
+    *
+    * @param logger Ember's own log (connection and server errors); `None`
+    *               discards it
     */
   def serve[F[_]: {Async, Network}](
       routes: HttpRoutes[F],
       port: Port,
-      host: String = "127.0.0.1"
+      host: String = "127.0.0.1",
+      logger: Option[Logger[F]] = None
   ): Resource[F, Server] =
     EmberServerBuilder
       .default[F]
+      .withLogger(logger.getOrElse(NoOpLogger[F]))
       .withHost(Host.fromString(host).getOrElse(Host.fromString("127.0.0.1").get))
       .withPort(IpPort.fromInt(port).get)
       .withHttpApp(routes.orNotFound)

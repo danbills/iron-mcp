@@ -9,6 +9,12 @@ val otel4sVersion     = "1.1.0"
 val munitVersion      = "1.3.5"
 val munitCeVersion    = "2.2.0"
 val fs2Version        = "3.13.0"
+val log4catsVersion   = "2.8.0"   // what http4s 0.23.37 depends on
+
+// http4s depends on SLF4J 1.7 (through log4cats-slf4j) with no backend, which
+// prints a "StaticLoggerBinder" warning in every suite that starts Ember. Tests
+// only: published POMs leave the backend to the application.
+val slf4jNopTest = "org.slf4j" % "slf4j-nop" % "1.7.36" % Test
 
 // Publishing metadata. sbt-ci-release forbids `version`, `publishTo`,
 // `publishMavenStyle` and `credentials` here: the version comes from the git
@@ -142,8 +148,11 @@ lazy val http = (project in file("modules/http"))
     libraryDependencies ++= Seq(
       "org.http4s"    %% "http4s-ember-server" % http4sVersion,
       "org.http4s"    %% "http4s-ember-client" % http4sVersion,
+      "org.typelevel" %% "log4cats-core"       % log4catsVersion,
+      "org.typelevel" %% "log4cats-testing"    % log4catsVersion % Test,
       "org.scalameta" %% "munit"               % munitVersion   % Test,
-      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
+      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test,
+      slf4jNopTest
     )
   )
 
@@ -157,7 +166,8 @@ lazy val otel = (project in file("modules/otel"))
       "org.typelevel"    %% "otel4s-oteljava"           % otel4sVersion,
       "io.opentelemetry" %  "opentelemetry-sdk-testing" % "1.64.0"       % Test,
       "org.scalameta"    %% "munit"                     % munitVersion   % Test,
-      "org.typelevel"    %% "munit-cats-effect"         % munitCeVersion % Test
+      "org.typelevel"    %% "munit-cats-effect"         % munitCeVersion % Test,
+      slf4jNopTest
     )
   )
 
@@ -218,7 +228,8 @@ lazy val auth = (project in file("modules/auth"))
       "org.http4s"    %% "http4s-circe"        % http4sVersion,
       "org.http4s"    %% "http4s-dsl"          % http4sVersion  % Test,  // the fake authorization server
       "org.scalameta" %% "munit"               % munitVersion   % Test,
-      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
+      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test,
+      slf4jNopTest
     )
   )
 
@@ -230,7 +241,8 @@ lazy val otelAuth = (project in file("modules/otel-auth"))
     libraryDependencies ++= Seq(
       "io.opentelemetry" %  "opentelemetry-sdk-testing" % "1.64.0"       % Test,
       "org.scalameta"    %% "munit"                     % munitVersion   % Test,
-      "org.typelevel"    %% "munit-cats-effect"         % munitCeVersion % Test
+      "org.typelevel"    %% "munit-cats-effect"         % munitCeVersion % Test,
+      slf4jNopTest
     )
   )
 
@@ -261,7 +273,8 @@ lazy val weather = (project in file("modules/weather"))
       // Tools are programs over an algebra of the API's requests (see NwsOp).
       "org.typelevel" %% "cats-free"           % "2.13.0",
       "org.scalameta" %% "munit"               % munitVersion   % Test,
-      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
+      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test,
+      slf4jNopTest
     )
   )
 
@@ -279,7 +292,8 @@ lazy val nasa = (project in file("modules/nasa"))
       // Tools are programs over an algebra of the API's requests (see ApodOp).
       "org.typelevel" %% "cats-free"           % "2.13.0",
       "org.scalameta" %% "munit"               % munitVersion   % Test,
-      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test
+      "org.typelevel" %% "munit-cats-effect"   % munitCeVersion % Test,
+      slf4jNopTest
     )
   )
 

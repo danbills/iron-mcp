@@ -28,7 +28,8 @@ final class McpServer[F[_]](
     val subscriptions: Option[SubscriptionProvider[F]] = None,
     val discoveryTtlMs: DiscoveryTtlMs = 300000L,
     val extensions: Option[Map[String, io.circe.JsonObject]] = None,
-    val customHandlers: Map[String, Option[Json] => F[Either[JsonRpcError, Json]]] = Map.empty
+    val customHandlers: Map[String, Option[Json] => F[Either[JsonRpcError, Json]]] = Map.empty,
+    val onUnhandled: Option[OnUnhandled[F]] = None
 )(using F: Applicative[F]) extends ServerHandler[F]:
 
   /** Capabilities are derived from the providers, never declared separately —
@@ -64,7 +65,8 @@ final class McpServer[F[_]](
   /** [[handle]], for transports: a provider that fails becomes an error
     * response instead of failing the stream. An [[McpException]] carries the
     * error to send; anything else is `-32603` without its message, which may
-    * hold internals the client should not see.
+    * hold internals the client should not see. That exception goes to
+    * [[onUnhandled]], if set.
     */
   def handleRecovering(message: JsonRpcMessage)(using F: ApplicativeThrow[F]): F[Option[JsonRpcMessage]] =
     handleEmittingRecovering(message, _ => F.unit)
@@ -72,15 +74,7 @@ final class McpServer[F[_]](
   override def handleEmittingRecovering(message: JsonRpcMessage, emit: NotificationSink[F])(using
       F: ApplicativeThrow[F]
   ): F[Option[JsonRpcMessage]] =
-    handleEmitting(message, emit).handleError { error =>
-      val id = message match
-        case JsonRpcMessage.Request(id, _, _) => Some(id)
-        case _                                => None
-      val reply = error match
-        case McpException(rpc) => rpc
-        case _                 => JsonRpcError(ErrorCode.InternalError, "internal error")
-      id.map(requestId => JsonRpcMessage.Failure(Some(requestId), reply))
-    }
+    OnUnhandled.recover(message, onUnhandled.getOrElse(OnUnhandled.noop[F]))(handleEmitting(message, emit))
 
   private def dispatch(method: Method, params: Option[Json], emit: NotificationSink[F]): F[Either[JsonRpcError, Json]] =
     method match

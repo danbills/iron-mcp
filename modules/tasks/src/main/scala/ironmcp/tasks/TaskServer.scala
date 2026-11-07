@@ -11,7 +11,7 @@ import io.github.iltotore.iron.*
 import io.github.iltotore.iron.autoRefine
 import io.github.iltotore.iron.constraint.all.*
 import ironmcp.protocol.*
-import ironmcp.server.{McpException, NotificationSink, ServerHandler}
+import ironmcp.server.{McpException, NotificationSink, OnUnhandled, ServerHandler}
 import ironmcp.tasks.TaskModels.*
 
 /** Server wrapper implementing the Tasks Extension (SEP-2663, Handbook §7.3).
@@ -35,8 +35,11 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
     val taskTools: Set[String] = Set.empty,
     val defaultPollIntervalMs: Long = 1000L,
     val defaultTtlMs: Long = 300000L,
-    val owner: Option[String] = None
+    val owner: Option[String] = None,
+    val onUnhandled: Option[OnUnhandled[F]] = None
 ) extends ServerHandler[F]:
+
+  private val hook: OnUnhandled[F] = onUnhandled.getOrElse(OnUnhandled.noop[F])
 
   def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] =
     handleEmitting(message, _ => Applicative[F].unit)
@@ -75,15 +78,7 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
   override def handleEmittingRecovering(message: JsonRpcMessage, emit: NotificationSink[F])(using
       ApplicativeThrow[F]
   ): F[Option[JsonRpcMessage]] =
-    handleEmitting(message, emit).handleError { error =>
-      val id = message match
-        case JsonRpcMessage.Request(id, _, _) => Some(id)
-        case _                                => None
-      val reply = error match
-        case McpException(rpc) => rpc
-        case _                 => JsonRpcError(ErrorCode.InternalError, "internal error")
-      id.map(requestId => JsonRpcMessage.Failure(Some(requestId), reply))
-    }
+    OnUnhandled.recover(message, hook)(handleEmitting(message, emit))
 
   private def handleGetTask(id: RequestId, params: Option[Json]): F[Option[JsonRpcMessage]] =
     params.flatMap(_.as[GetTaskParams].toOption) match
@@ -139,9 +134,13 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
               store.fail(taskId, err)
             case _ =>
               store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "Tool produced no result"))
-          }.handleErrorWith { err =>
-            val msg = Option(err.getMessage).filter(_.nonEmpty).getOrElse("internal error")
-            store.fail(taskId, JsonRpcError(ErrorCode.InternalError, msg.assume[Not[Empty]]))
+          }.handleErrorWith {
+            // As for a request: an McpException is the answer; anything else
+            // goes to the hook and reaches the client as -32603, no detail.
+            case McpException(rpc) => store.fail(taskId, rpc)
+            case err =>
+              hook(req, err).handleError(_ => ()) *>
+                store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "internal error"))
           }
         }
         createRes <- store.create(taskId, defaultPollIntervalMs, defaultTtlMs, fiber.cancel, owner)
@@ -179,6 +178,7 @@ object TaskServer:
       taskTools: Set[String] = Set.empty,
       defaultPollIntervalMs: Long = 1000L,
       defaultTtlMs: Long = 300000L,
-      owner: Option[String] = None
+      owner: Option[String] = None,
+      onUnhandled: Option[OnUnhandled[F]] = None
   ): TaskServer[F] =
-    new TaskServer[F](underlying, store, random, taskTools, defaultPollIntervalMs, defaultTtlMs, owner)
+    new TaskServer[F](underlying, store, random, taskTools, defaultPollIntervalMs, defaultTtlMs, owner, onUnhandled)

@@ -170,3 +170,39 @@ class TaskServerSuite extends CatsEffectSuite:
       getJson = getRes.get.asInstanceOf[JsonRpcMessage.Success].result
       _ = assertEquals(getJson.hcursor.get[TaskStatus]("status"), Right(TaskStatus.Cancelled))
     yield ()
+
+  test("a background task that throws goes to onUnhandled and fails with -32603, no detail"):
+    // An underlying handler that throws, as a provider bug would.
+    val throwing = new ServerHandler[IO]:
+      def handle(message: JsonRpcMessage): IO[Option[JsonRpcMessage]] = IO.raiseError(RuntimeException("db password is hunter2"))
+      def handleRecovering(message: JsonRpcMessage)(using cats.ApplicativeThrow[IO]): IO[Option[JsonRpcMessage]] = handle(message)
+    for
+      seen   <- IO.ref(List.empty[String])
+      random <- SecureRandom.javaSecuritySecureRandom[IO]
+      store  <- TaskStore.inMemory[IO](defaultPollIntervalMs = 50L)
+      server = TaskServer[IO](
+        underlying = throwing,
+        store = store,
+        random = random,
+        taskTools = Set("generate_report"),
+        onUnhandled = Some((_, error) => seen.update(error.getMessage :: _))
+      )
+      res <- server.handle(
+        JsonRpcMessage.Request(
+          id = RequestId.Num(5L),
+          method = "tools/call",
+          params = Some(Json.obj("name" -> "generate_report".asJson, "arguments" -> Json.obj("seconds" -> 0.asJson), "_meta" -> tasksMeta))
+        )
+      )
+      taskId = res.get.asInstanceOf[JsonRpcMessage.Success].result.hcursor.get[String]("taskId").toOption.get
+      _ <- IO.sleep(200.millis)
+      getRes <- server.handle(
+        JsonRpcMessage.Request(RequestId.Num(6L), "tasks/get", Some(Json.obj("taskId" -> taskId.asJson, "_meta" -> tasksMeta)))
+      )
+      hooked <- seen.get
+    yield
+      val snapshot = getRes.get.asInstanceOf[JsonRpcMessage.Success].result
+      assertEquals(snapshot.hcursor.get[TaskStatus]("status"), Right(TaskStatus.Failed))
+      assertEquals(snapshot.hcursor.downField("error").get[Int]("code"), Right(-32603))
+      assert(!snapshot.noSpaces.contains("hunter2"))
+      assertEquals(hooked, List("db password is hunter2"))

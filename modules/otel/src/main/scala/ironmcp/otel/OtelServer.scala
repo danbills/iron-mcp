@@ -6,7 +6,7 @@ import cats.effect.{Async, Clock}
 import cats.syntax.all.*
 import io.circe.Json
 import ironmcp.protocol.*
-import ironmcp.server.{McpServer, NotificationSink, ServerHandler}
+import ironmcp.server.{McpException, McpServer, NotificationSink, OnUnhandled, ServerHandler}
 import org.typelevel.otel4s.Attribute
 import org.typelevel.otel4s.trace.{SpanBuilder, SpanContext, SpanKind, StatusCode}
 
@@ -14,6 +14,8 @@ final class OtelServer[F[_]](
     val underlying: McpServer[F],
     val telemetry: McpTelemetry[F]
 )(using F: Async[F]):
+
+  private val hook: OnUnhandled[F] = underlying.onUnhandled.getOrElse(OnUnhandled.noop[F])
 
   def handle(
       message: JsonRpcMessage,
@@ -122,7 +124,13 @@ final class OtelServer[F[_]](
     configuredBuilder.build.use { span =>
       for
         start <- Clock[F].monotonic
-        callResult <- (if recovering then underlying.handleEmittingRecovering(req, emit) else underlying.handleEmitting(req, emit)).attempt
+        // The plain handler even when recovering, so an exception reaches the
+        // span before it becomes a reply. An McpException is the handler's
+        // chosen answer: recovering, it is that reply, as the server would send.
+        callResult <- underlying.handleEmitting(req, emit).attempt.map {
+                        case Left(error @ McpException(_)) if recovering => Right(OnUnhandled.reply(req, error))
+                        case other                                       => other
+                      }
         end   <- Clock[F].monotonic
         durationSec = (end - start).toNanos.toDouble / 1e9
         reply <- callResult match
@@ -151,7 +159,7 @@ final class OtelServer[F[_]](
                               durationSec,
                               initialAttrs :+ Attribute(McpSemantics.Attributes.ErrorType, exName)
                             )
-                       res <- F.raiseError[Option[JsonRpcMessage]](ex)
+                       res <- if recovering then OnUnhandled.recover(req, hook)(F.raiseError(ex)) else F.raiseError(ex)
                      yield res
 
                    case Right(Some(JsonRpcMessage.Failure(reqId, rpcError))) =>
