@@ -8,6 +8,7 @@ import fs2.{text, Stream}
 import fs2.io.file.Path
 import fs2.io.process.{ProcessBuilder, Processes}
 import ironmcp.protocol.JsonRpcMessage
+import ironmcp.server.NotificationSink
 
 import scala.concurrent.duration.*
 
@@ -32,6 +33,7 @@ object StdioClient:
       exitGrace: FiniteDuration = 2.seconds
   )(using F: Async[F]): Resource[F, ClientTransport[F]] =
     given Processes[F] = Processes.forAsync[F]
+    Sigpipe.ignore()
     val builder = workingDirectory.foldLeft(ProcessBuilder(command, args).withExtraEnv(env))((b, dir) => b.withWorkingDirectory(Path(dir)))
     for
       process <- builder.spawn[F]
@@ -49,7 +51,7 @@ object StdioClient:
       transport <- ClientTransport.lines(
                      process.stdout.through(text.utf8.decode).through(text.lines).onFinalize(stdoutDone.complete(()).void),
                      line => lines.offer(Some(line)),
-                     onNotification.getOrElse(_ => F.unit)
+                     onNotification.getOrElse(NotificationSink.discard[F])
                    )
       // Runs before the transport and the process are released: end stdin, give
       // the server a moment to exit on its own, and let both readers reach the end

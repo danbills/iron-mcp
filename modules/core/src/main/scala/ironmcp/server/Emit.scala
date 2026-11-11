@@ -11,6 +11,10 @@ import ironmcp.protocol.*
 /** Where a transport puts the notifications a request emits while it runs. */
 type NotificationSink[F[_]] = JsonRpcMessage.Notification => F[Unit]
 
+object NotificationSink:
+  /** Drops every notification: for a request served with nowhere to put them. */
+  def discard[F[_]](using F: Applicative[F]): NotificationSink[F] = _ => F.unit
+
 /** What a running tool can tell the client before it answers.
   *
   * Only progress: revision 2026-07-28 deprecates the `logging` capability, so
@@ -42,6 +46,6 @@ final class Emit[F[_]] private (val progressToken: Option[ProgressToken], sink: 
 object Emit:
 
   /** Emits nothing: for a request served without a sink. */
-  def none[F[_]: Applicative]: Emit[F] = new Emit[F](None, _ => Applicative[F].unit)
+  def none[F[_]: Applicative]: Emit[F] = new Emit[F](None, NotificationSink.discard[F])
 
   def apply[F[_]: Applicative](meta: RequestMeta, sink: NotificationSink[F]): Emit[F] = new Emit[F](meta.progressToken, sink)

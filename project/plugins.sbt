@@ -13,3 +13,4 @@ addSbtPlugin("com.github.sbt" % "sbt-pgp"    % "2.3.1")  // publishSigned
 // Scala.js, for the wire types (`protocol`) and the MCP Apps View library (`appsView`).
 addSbtPlugin("org.scala-js"       % "sbt-scalajs"              % "1.22.0")
 addSbtPlugin("org.portable-scala" % "sbt-scalajs-crossproject" % "1.4.0")
+addSbtPlugin("org.scoverage" % "sbt-scoverage" % "2.4.4") // coverage of coreJVM: scripts/coverage.sh

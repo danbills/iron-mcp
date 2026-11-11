@@ -100,6 +100,12 @@ lazy val core = crossProject(JVMPlatform, NativePlatform)
       "org.typelevel"      %% "munit-cats-effect" % munitCeVersion % Test
     )
   )
+  .jvmSettings(
+    // scripts/coverage.sh turns coverage on for coreJVM alone; below 100% fails the report
+    coverageMinimumStmtTotal   := 100,
+    coverageMinimumBranchTotal := 100,
+    coverageFailOnMinimum      := true
+  )
 
 lazy val mcpbTools = settingKey[Seq[Mcpb.Tool]]("The tools an MCP Bundle's manifest lists; checked against the linked server")
 lazy val mcpb      = taskKey[File]("Links the server and packs it as an MCP Bundle (.mcpb, manifest 0.3)")
@@ -140,6 +146,20 @@ lazy val demo = crossProject(JVMPlatform, NativePlatform)
   )
 
 // Streamable HTTP. JVM-only: http4s ember does not run on Scala Native.
+/** A stdio server with every capability MCP Inspector's CLI can drive (tools, resources and templates, prompts,
+  * completions): what it/ (scripts/it.sh) tests end to end, in the 2026-07-28 protocol era. Not published.
+  */
+lazy val fixture = crossProject(JVMPlatform, NativePlatform)
+  .crossType(CrossType.Pure)
+  .in(file("modules/fixture"))
+  .dependsOn(core)
+  .settings(
+    name := "iron-mcp-fixture",
+    Compile / mainClass := Some("ironmcp.fixture.Main"),
+    publish / skip := true
+  )
+  .nativeSettings(nativeConfig ~= (_.withBaseName("iron-mcp-fixture")))
+
 lazy val http = (project in file("modules/http"))
   .dependsOn(core.jvm)
   .settings(
@@ -299,7 +319,7 @@ lazy val nasa = (project in file("modules/nasa"))
 
 lazy val root = (project in file("."))
   .aggregate(
-    protocol.jvm, protocol.native, protocol.js, core.jvm, core.native, demo.jvm, demo.native, http, weather, nasa, otel, auth, otelAuth,
+    protocol.jvm, protocol.native, protocol.js, core.jvm, core.native, demo.jvm, demo.native, fixture.jvm, fixture.native, http, weather, nasa, otel, auth, otelAuth,
     tasks.jvm, tasks.native, apps.jvm, apps.native, appsView
   )
   .settings(name := "iron-mcp", publish / skip := true)

@@ -48,7 +48,7 @@ final class McpServer[F[_]](
   /** Answers one message. `None` means the message was a notification, which by
     * JSON-RPC rule gets no reply.
     */
-  def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] = handleEmitting(message, _ => F.unit)
+  def handle(message: JsonRpcMessage): F[Option[JsonRpcMessage]] = handleEmitting(message, NotificationSink.discard[F])
 
   /** [[handle]], with notifications the request emits going to `emit`. */
   override def handleEmitting(message: JsonRpcMessage, emit: NotificationSink[F]): F[Option[JsonRpcMessage]] = message match
@@ -69,7 +69,7 @@ final class McpServer[F[_]](
     * [[onUnhandled]], if set.
     */
   def handleRecovering(message: JsonRpcMessage)(using F: ApplicativeThrow[F]): F[Option[JsonRpcMessage]] =
-    handleEmittingRecovering(message, _ => F.unit)
+    handleEmittingRecovering(message, NotificationSink.discard[F])
 
   override def handleEmittingRecovering(message: JsonRpcMessage, emit: NotificationSink[F])(using
       F: ApplicativeThrow[F]
