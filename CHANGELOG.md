@@ -2,7 +2,7 @@
 
 All notable changes to iron-mcp. Versions follow [Semantic Versioning](https://semver.org); before 1.0, a minor version may break the API, and such changes are listed under **Breaking**. Artifacts are on Maven Central as `io.github.danbills:iron-mcp-*`.
 
-## [Unreleased]
+## [0.8.1] — 2026-11-11
 
 ### Fixed
 - An error reply to a message the server could not read (a parse error, an invalid request) had no `id` at all: `Wire.encode` drops null fields, and took the `"id": null` that JSON-RPC 2.0 requires with them. Every transport now sends `"id": null` there.
@@ -97,7 +97,8 @@ Both `ext-auth` extensions (OAuth Client Credentials, Enterprise-Managed Authori
 
 First release: the MCP 2026-07-28 protocol on a cross-platform Scala 3 core (JVM and Scala Native), with JSON Schema derived at compile time from Iron constraints, and the stdio transport.
 
-[Unreleased]: https://github.com/danbills/iron-mcp/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/danbills/iron-mcp/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/danbills/iron-mcp/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/danbills/iron-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/danbills/iron-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/danbills/iron-mcp/compare/v0.5.0...v0.6.0
