@@ -1,0 +1,13 @@
+{
+  "name": "iron-mcp-it",
+  "private": true,
+  "description": "End-to-end tests: MCP Inspector's CLI (bunx, --protocol-era modern) against the iron-mcp fixture server. Run scripts/it.sh.",
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "2.13.0",
+    "@types/bun": "1.3.3"
+  }
+}

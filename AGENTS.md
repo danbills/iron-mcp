@@ -22,6 +22,8 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
 - `modules/docs/` — mdoc documentation runner verifying markdown guides against compiled modules
 - `modules/core/src/test/` — munit test suites
 - `modules/demo/` — runnable stdio demo server
+- `modules/fixture/` — integration fixture (JVM and Native, not published): a stdio server with every capability MCP Inspector's CLI can drive, for `it/`
+- `it/` — end-to-end tests in `bun test`: MCP Inspector's CLI (`bunx`, `--protocol-era modern`) against the fixture; `scripts/it.sh`
 - `modules/weather/` — example MCP server over the NWS (weather.gov) API, JVM-only: `Nws.scala` (models + `NwsOp` algebra + `Nws[G]` smart constructors), `NwsHttp4s.scala` (interpreter), `WeatherTools.scala` (tools as `Free` programs), `Main.scala` (wiring)
 - `modules/nasa/` — example MCP server over NASA's APOD API (`NASA_API_KEY`), JVM-only, same layout (`ApodOp`, `ApodHttp4s`, `ApodTools`)
 - `build.sbt`, `project/` — sbt 2 build; `project/Mcpb.scala` writes `.mcpb` bundles (hand-written manifest JSON and zip Unix modes, since the build has no JSON or zip library)
@@ -44,9 +46,11 @@ sbt "weather/run"             # run the weather.gov example (needs no key)
 sbt "nasa/run"                # run the NASA APOD example (set NASA_API_KEY)
 sbt "demoNative/nativeLink"   # native binary
 sbt "demoNative/mcpb"         # pack it as an MCP Bundle (project/Mcpb.scala; checks tools against the binary)
+scripts/coverage.sh           # coreJVM statement and branch coverage (scoverage); fails below 100%
+scripts/it.sh                 # MCP Inspector's CLI (bunx, --protocol-era modern) against modules/fixture, native and JVM
 ```
 
-Releases are cut locally (no CI): `git tag -a v0.1.0`, then `sbt +publishSigned` and `sbt sonaUpload`; the version comes from the tag via sbt-dynver. Every release gets a `CHANGELOG.md` section (Breaking / Added / Fixed) and a GitHub Release with that section as its notes (`gh release create vX.Y.Z --notes-file … --verify-tag`).
+Releases are cut locally (no CI): `git tag -a v0.1.0`, then (after `scripts/coverage.sh` and `scripts/it.sh` pass, and `sbt "show coreJVM/coverageEnabled"` says `false`) `sbt +publishSigned` and `sbt sonaUpload`; the version comes from the tag via sbt-dynver. Every release gets a `CHANGELOG.md` section (Breaking / Added / Fixed) and a GitHub Release with that section as its notes (`gh release create vX.Y.Z --notes-file … --verify-tag`).
 
 ## Coding Style & Naming Conventions
 
@@ -61,6 +65,9 @@ Releases are cut locally (no CI): `git tag -a v0.1.0`, then `sbt +publishSigned`
 - Framework: munit + munit-cats-effect (`CatsEffectSuite`). Core suites are `ProtocolSuite.scala` under `modules/core/src/test/scala/ironmcp/` and `SchemaSuite.scala` under `modules/protocol/src/test/scala/ironmcp/`; the examples have `WeatherToolsSuite` and `ApodToolsSuite`. Name new suites `<Area>Suite`.
 - Example tools are tested offline: interpret their programs with a canned `Op ~> Either[Throwable, *]`, and test the http4s interpreter against `Client.fromHttpApp`. No test may hit the network.
 - Run with `sbt "coreJVM/Test/testFull"`; keep tests fast and hermetic. Cover new protocol behavior by round-tripping real wire JSON through `Wire`.
+- `modules/core` is at 100% statement and branch coverage, with no exclusions: `scripts/coverage.sh` fails below that, and `scripts/uncovered.py` lists the lines a change left untested. A line no test can reach is dead code to remove, not a reason for `$COVERAGE-OFF$`. Shared tests also run on Native (`coreNative/Test/testFull`); a test that swaps process-wide state (`System.setIn`) goes under `modules/core/.jvm/src/test`.
+- Tests may spawn `sh` (StdioProcessSuite plays a server with a script) but nothing else outside the build.
+- `it/` is the end-to-end suite: `bun test` driving MCP Inspector's CLI (pinned in `it/package.json`, `bun.lock` committed) against `modules/fixture`, in the modern era only; iron-mcp is 2026-07-28 and a legacy-era client is expected to be refused. A capability added to core gets a fixture piece and an `it/` case when the CLI can drive it (it cannot drive completions).
 
 ## Commit & Pull Request Guidelines
 
@@ -71,6 +78,9 @@ Pull requests should name the protocol area changed, justify any new hand-writte
 ## sbt 2 Behavior That Bites
 
 - **`test` is incremental**: it runs only suites affected by changed code (old `testQuick`). A short or empty run is not a pass. Use `Test/testFull`.
+- **`sbt` is a client of a long-lived server**: a `set` (even from `sbt -batch "set ...; ..."`) stays in the server's session for every later command, until `session clear-all` or a restart. `scripts/coverage.sh` clears its session on exit; if a build ever loads `scala/runtime/coverage/Invoker` (FileNotFoundException under `scoverage-data`), run `sbt "session clear-all; coreJVM/clean"` and `scripts/purge-instrumented.py`.
+- **The compile cache has two stores**: `~/.cache/sbt/v2` (shared) and `target/bootcache` (target/out's class files are symlinks into it, so `clean` alone does not force a compile). A cache hit runs no compiler, so compiler side outputs (scoverage's statement map) are not written; `scripts/coverage.sh` adds a per-run scalacOptions nonce to force a real compile.
+- **Scala 3 coverage measurements are flushed at JVM exit**: coverage runs need `Test / fork := true`, or the report reads almost nothing.
 - **Compile results are cached on disk, across directories and worktrees**, and `clean` does not evict them. A cache hit prints `[success]` in ~0 s and does not replay warnings. Under `-Werror` that is safe (a cached success was compiled clean), but compile the Native side too (`coreNative/Test/compile; demoNative/compile`): a warning can exist on one platform only.
 - **`sbt --client` joins its arguments into one command line**: chain with `;` inside one quoted argument (`sbt --client "a; b"`). Plain `sbt -batch` accepts the same form.
 - **JDK updated in place** makes the running server fail to spawn processes (`Cannot run program "/usr/bin/clang": Failed to exec spawn helper`), which breaks `nativeLink`. Run `sbt --client shutdown` and retry.
@@ -85,5 +95,5 @@ Pull requests should name the protocol area changed, justify any new hand-writte
 - Auth stays fail-closed: no `Option` escape hatch on issuer or audience, no default `Access` for an unlisted target, no echo of token contents in `WWW-Authenticate`, no token in an `AuthEvent`.
 - Never trust `requestState` unsealed: interactive tools take a `RequestStateCodec`; do not add a default `given` for `unprotected`.
 - Only `protocol` and `apps-view` build for Scala.js. Keep `protocol` to circe and Iron (no cats-effect, no `java.io`), and its regexes JS-compatible (no lookbehind, possessive quantifiers or `\p{}`).
-- Keep core free of `IO` and of cats-free: ask for the weakest typeclass that works (`Applicative` for dispatch, `ApplicativeThrow` for tools, `MonadThrow` for `McpClient`, `Concurrent` for `ClientTransport.lines`, `Async` only for real stdio and process spawning). On Scala Native, `fs2.io.stdin/stdout/stderr` go through epoll, which refuses regular files: use blocking `System.in/out/err` (see `Stdio.serve`, `StdioClient`).
+- Keep core free of `IO` and of cats-free: ask for the weakest typeclass that works (`Applicative` for dispatch, `ApplicativeThrow` for tools, `MonadThrow` for `McpClient`, `Concurrent` for `ClientTransport.lines`, `Async` only for real stdio and process spawning). On Scala Native, `fs2.io.stdin/stdout/stderr` go through epoll, which refuses regular files: use blocking `System.in/out/err` (see `Stdio.serve`, `StdioClient`). A native process that writes to a child must ignore SIGPIPE, or a child that exits kills it: `StdioClient` calls `Sigpipe.ignore()` (`modules/core/.native`; a no-op on the JVM, which ignores it already).
 - Outbound calls in example tools go through an algebra and interpreter, not inline http4s in the handler.
