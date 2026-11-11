@@ -9,7 +9,7 @@ import fs2.Stream
 import io.circe.Json
 import io.github.iltotore.iron.autoRefine
 import ironmcp.protocol.*
-import ironmcp.server.ServerHandler
+import ironmcp.server.{NotificationSink, ServerHandler}
 import ironmcp.transport.Wire
 
 /** How a client reaches a server: send a request, get its response.
@@ -28,7 +28,7 @@ object ClientTransport:
     * ways, so what is tested is what a remote client would see.
     */
   def inProcess[F[_]](server: ServerHandler[F])(using F: MonadThrow[F]): ClientTransport[F] =
-    inProcess(server, _ => F.unit)
+    inProcess(server, NotificationSink.discard[F])
 
   /** [[inProcess]], with the notifications a request emits (progress) going
     * to `onNotification` before its reply returns.
@@ -39,11 +39,9 @@ object ClientTransport:
     private def overWire(message: JsonRpcMessage): F[JsonRpcMessage] =
       F.fromEither(Wire.decode(Wire.encode(message)).leftMap(e => McpClientError.Malformed(e.message: String)))
 
+    // A notification survives the round trip as a notification; `collect` only narrows the type.
     private val delivered: JsonRpcMessage.Notification => F[Unit] = notification =>
-      overWire(notification).flatMap {
-        case n: JsonRpcMessage.Notification => onNotification(n)
-        case _                              => F.unit
-      }
+      overWire(notification).flatMap(message => Option(message).collect { case n: JsonRpcMessage.Notification => n }.traverse_(onNotification))
 
     def request(message: JsonRpcMessage.Request): F[JsonRpcMessage] =
       overWire(message).flatMap(server.handleEmittingRecovering(_, delivered)).flatMap {

@@ -14,7 +14,11 @@ import ironmcp.protocol.*
 object Wire:
 
   def encode(message: JsonRpcMessage): String =
-    message.asJson.deepDropNullValues.noSpaces
+    val json = message.asJson.deepDropNullValues
+    message match
+      // JSON-RPC 2.0: an error whose request id could not be read still carries "id": null, which dropping nulls removed
+      case JsonRpcMessage.Failure(None, _) => json.mapObject(_.add("id", Json.Null)).noSpaces
+      case _                               => json.noSpaces
 
   def decode(raw: String): Either[JsonRpcError, JsonRpcMessage] =
     parser.parse(raw) match
@@ -31,7 +35,8 @@ object Wire:
   def errorResponse(error: JsonRpcError): String =
     encode(JsonRpcMessage.Failure(None, error))
 
-  private def nonEmpty(value: String): NonEmptyString =
+  /** A decoder's message, which the protocol requires non-empty. */
+  private[transport] def nonEmpty(value: String): NonEmptyString =
     (if value.isEmpty then "unspecified error" else value).asInstanceOf[NonEmptyString]
 
   def json(value: Json): String = value.deepDropNullValues.noSpaces
