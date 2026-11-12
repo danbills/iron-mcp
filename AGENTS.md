@@ -19,6 +19,7 @@ iron-mcp is an MCP server for Scala 3 (protocol revision 2026-07-28), cross-buil
 - `modules/tasks/` — `iron-mcp-tasks`, cross-built (`tasksJVM` / `tasksNative`): Tasks extension (`io.modelcontextprotocol/tasks`, SEP-2663, Handbook §7.3) with `TaskStore`, `TaskServer` background fiber management and cooperative cancellation, and `TasksClient` with transparent polling (`callToolWithPolling`)
 - `modules/apps/` — `iron-mcp-apps`, cross-built (`appsJVM` / `appsNative`): MCP Apps (`io.modelcontextprotocol/ui`, Handbook §7.4): `McpApps` (extension id, `text/html;profile=mcp-app`, `clientSupports`), `withUi` / `withVisibility` on `McpTool` (`_meta.ui.resourceUri`, `Visibility`), `UiResources` serving `ui://` Views with their `_meta.ui` (`UiCsp`, `UiPermissions`), and `UiHtml.inlineScript` / `inlineStyle` (a bundled View inlined into its page)
 - `modules/apps-view/` — `iron-mcp-apps-view`, Scala.js only (`appsView`): the View side of MCP Apps (ext-apps protocol `2026-01-26`, JSON-RPC over `postMessage` with the host). `McpAppView` (handshake, `events` stream, `hostContext` signal, server tools and resources through the host, sampling, cancellation both ways), `ViewTool` / `ViewTools` (tools the View offers the host: `tools/list`, `tools/call`, `list_changed`), `HostPort` (`windowParent`, `inMemory` for tests), `HostTheming`, `SafeArea`, `AutoResize` (measures as ext-apps' `App`), `ViewAuth` (`ViewSession` from the server's `whoami`, `unlock`, error `classify`; a View never sees a token); cats-effect and fs2, polymorphic in `F`
+- `modules/apps-probe/` — MCP Apps probe, JVM server (`appsProbe`) + Scala.js View (`appsProbeView`): `hello` (a minimal View) and `apps_probe` (a checklist of what the host supports); HTTP with CORS or stdio, logging each request with whether its client declared `io.modelcontextprotocol/ui`. `LegacyStdio` answers `initialize` for 2025 clients (Codex Desktop renders its Views through it)
 - `modules/docs/` — mdoc documentation runner verifying markdown guides against compiled modules
 - `modules/core/src/test/` — munit test suites
 - `modules/demo/` — runnable stdio demo server
@@ -44,6 +45,7 @@ sbt "docs/run"               # compile and verify markdown docs with mdoc
 sbt "demoJVM/run"             # start the stdio demo server on the JVM
 sbt "weather/run"             # run the weather.gov example (needs no key)
 sbt "nasa/run"                # run the NASA APOD example (set NASA_API_KEY)
+sbt "appsProbe/run"           # MCP Apps probe over HTTP (:3012, CORS on); `appsProbe/run stdio` for stdio hosts
 sbt "demoNative/nativeLink"   # native binary
 sbt "demoNative/mcpb"         # pack it as an MCP Bundle (project/Mcpb.scala; checks tools against the binary)
 scripts/coverage.sh           # coreJVM statement and branch coverage (scoverage); fails below 100%

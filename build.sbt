@@ -317,9 +317,38 @@ lazy val nasa = (project in file("modules/nasa"))
     )
   )
 
+// The MCP Apps probe: a server whose one View reports what its host supports
+// (`appsProbe/run`; `appsProbe/run stdio`). The View is Scala.js, linked and
+// inlined into the page the server serves.
+lazy val appsProbeView = (project in file("modules/apps-probe/view"))
+  .enablePlugins(ScalaJSPlugin)
+  .dependsOn(appsView)
+  .settings(
+    name                            := "iron-mcp-apps-probe-view",
+    publish / skip                  := true,
+    scalaJSUseMainModuleInitializer := true
+  )
+
+lazy val appsProbe = (project in file("modules/apps-probe/server"))
+  .dependsOn(apps.jvm, http)
+  .settings(
+    name                := "iron-mcp-apps-probe",
+    publish / skip      := true,
+    Compile / mainClass := Some("ironmcp.appsprobe.Main"),
+    Compile / resourceGenerators += Def.task {
+      Def.uncached { // sbt 2: a task returning files is not cached
+        val _      = (appsProbeView / Compile / fullLinkJS).value
+        val linked = (appsProbeView / Compile / fullLinkJS / scalaJSLinkerOutputDirectory).value / "main.js"
+        val out    = (Compile / resourceManaged).value / "apps-probe" / "view.js"
+        IO.copyFile(linked, out)
+        Seq(out)
+      }
+    }.taskValue
+  )
+
 lazy val root = (project in file("."))
   .aggregate(
     protocol.jvm, protocol.native, protocol.js, core.jvm, core.native, demo.jvm, demo.native, fixture.jvm, fixture.native, http, weather, nasa, otel, auth, otelAuth,
-    tasks.jvm, tasks.native, apps.jvm, apps.native, appsView
+    tasks.jvm, tasks.native, apps.jvm, apps.native, appsView, appsProbeView, appsProbe
   )
   .settings(name := "iron-mcp", publish / skip := true)

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>MCP Apps probe</title>
+<style>
+  :root {
+    --bg: var(--color-background-primary, Canvas);
+    --fg: var(--color-text-primary, CanvasText);
+    --muted: var(--color-text-secondary, GrayText);
+    --line: var(--color-border-primary, color-mix(in srgb, CanvasText 15%, transparent));
+    --ok: #1a7f37; --failed: #cf222e; --waiting: #9a6700;
+    font-family: var(--font-sans, system-ui, sans-serif);
+  }
+  @media (prefers-color-scheme: dark) { :root { --ok: #3fb950; --failed: #f85149; --waiting: #d29922; } }
+  [data-theme="dark"] { --ok: #3fb950; --failed: #f85149; --waiting: #d29922; }
+  body { margin: 0; padding: 12px 16px; background: var(--bg); color: var(--fg); font-size: 14px; }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  p.lede { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: grid; grid-template-columns: 1.5em 11em 1fr; gap: 6px; align-items: baseline; padding: 5px 0; border-top: 1px solid var(--line); }
+  li .mark { font-weight: 700; text-align: center; }
+  li .label { font-weight: 600; }
+  li .detail { color: var(--muted); overflow-wrap: anywhere; font-size: 13px; }
+  li[data-status="ok"] .mark { color: var(--ok); }
+  li[data-status="failed"] .mark { color: var(--failed); }
+  li[data-status="waiting"] .mark { color: var(--waiting); }
+  h2 { font-size: 13px; margin: 14px 0 4px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  button { font: inherit; font-size: 13px; padding: 2px 8px; cursor: pointer; justify-self: start; }
+  li.action { grid-template-columns: 1.5em 11em 1fr; }
+  @media (max-width: 480px) { li, li.action { grid-template-columns: 1.5em 1fr; } li .detail { grid-column: 2; } }
+</style>
+</head>
+<body>
+<h1>MCP Apps probe</h1>
+<p class="lede">What this host does with an MCP Apps View. Rows fill in as the host answers; the buttons each ask it for one thing.</p>
+<ul>
+  <li id="handshake" data-status="waiting"><span class="mark">…</span><span class="label">Handshake</span><span class="detail">waiting for ui/initialize</span></li>
+  <li id="capabilities" data-status="waiting"><span class="mark">…</span><span class="label">Host capabilities</span><span class="detail"></span></li>
+  <li id="context" data-status="waiting"><span class="mark">…</span><span class="label">Host context</span><span class="detail"></span></li>
+  <li id="theme" data-status="waiting"><span class="mark">…</span><span class="label">Theme</span><span class="detail"></span></li>
+  <li id="tool-input" data-status="waiting"><span class="mark">…</span><span class="label">Tool input</span><span class="detail">not received yet</span></li>
+  <li id="tool-result" data-status="waiting"><span class="mark">…</span><span class="label">Tool result</span><span class="detail">not received yet</span></li>
+  <li id="context-changed" data-status="absent"><span class="mark">–</span><span class="label">Context updates</span><span class="detail">none yet (change the host's theme or size)</span></li>
+</ul>
+<h2>Ask the host</h2>
+<ul>
+  <li id="server-tool" class="action" data-status="absent"><span class="mark">–</span><button></button><span class="detail">tools/call apps_probe_ping, through the host</span></li>
+  <li id="read-resource" class="action" data-status="absent"><span class="mark">–</span><button></button><span class="detail">resources/read of this View</span></li>
+  <li id="message" class="action" data-status="absent"><span class="mark">–</span><button></button><span class="detail">ui/message into the conversation</span></li>
+  <li id="model-context" class="action" data-status="absent"><span class="mark">–</span><button></button><span class="detail">ui/update-model-context</span></li>
+  <li id="open-link" class="action" data-status="absent"><span class="mark">–</span><button></button><span class="detail">ui/open-link</span></li>
+  <li id="display-mode" class="action" data-status="absent"><span class="mark">–</span><button></button><span class="detail">ui/request-display-mode</span></li>
+  <li id="log" class="action" data-status="absent"><span class="mark">–</span><button></button><span class="detail">notifications/message</span></li>
+</ul>
+<!-- mcp-app-script -->
+</body>
+</html>
