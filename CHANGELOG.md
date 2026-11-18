@@ -2,6 +2,16 @@
 
 All notable changes to iron-mcp. Versions follow [Semantic Versioning](https://semver.org); before 1.0, a minor version may break the API, and such changes are listed under **Breaking**. Artifacts are on Maven Central as `io.github.danbills:iron-mcp-*`.
 
+## [0.9.0] — 2026-11-18
+
+### Added
+- **`apps-probe`**: MCP Apps probe server with `hello` and `apps_probe` checklist Views (HTTP with CORS and stdio, plus `LegacyStdio` for 2025 clients).
+- Build updated to **sbt 2.1.0**, **Scala 3.10.1**, and `sbt-pgp` 2.4.0.
+- Expanded unit test coverage across `protocol`, `http`, `otel`, `tasks`, `apps`, `auth`, `otel-auth`, `weather`, and `nasa`.
+
+### Fixed
+- **`TaskServer`** (`iron-mcp-tasks`): register the task in `TaskStore` before starting the background fiber (with a `Deferred` cancel gate), eliminating a race where a fast tool could complete before the task entry existed.
+
 ## [0.8.1] — 2026-11-11
 
 ### Fixed
