@@ -2,7 +2,7 @@ package ironmcp
 package tasks
 
 import cats.{Applicative, ApplicativeThrow}
-import cats.effect.{Concurrent, Temporal}
+import cats.effect.{Concurrent, Deferred, Temporal}
 import cats.effect.std.SecureRandom
 import cats.syntax.all.*
 import io.circe.*
@@ -124,6 +124,8 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
       for
         bytes <- random.nextBytes(16)
         taskId = "task-" + bytes.map(b => f"${b & 0xff}%02x").mkString
+        cancelGate <- Deferred[F, F[Unit]]
+        createRes  <- store.create(taskId, defaultPollIntervalMs, defaultTtlMs, cancelGate.get.flatten, owner)
         fiber <- Concurrent[F].start {
           underlying.handle(req).flatMap {
             case Some(JsonRpcMessage.Success(_, resJson)) =>
@@ -143,7 +145,7 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
                 store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "internal error"))
           }
         }
-        createRes <- store.create(taskId, defaultPollIntervalMs, defaultTtlMs, fiber.cancel, owner)
+        _ <- cancelGate.complete(fiber.cancel)
       yield Some(JsonRpcMessage.Success(req.id, createRes.asJson))
     else
       // Plain synchronous execution for non-task tools or non-task clients

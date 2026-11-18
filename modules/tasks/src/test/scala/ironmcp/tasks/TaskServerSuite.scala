@@ -237,7 +237,7 @@ class TaskServerSuite extends CatsEffectSuite:
       badCancel <- server.handle(JsonRpcMessage.Request(RequestId.Num(2), "tasks/cancel", Some(Json.obj())))
       missCancel<- server.handle(JsonRpcMessage.Request(RequestId.Num(3), "tasks/cancel", Some(Json.obj("taskId" -> "nope".asJson))))
       badUpdate <- server.handle(JsonRpcMessage.Request(RequestId.Num(4), "tasks/update", Some(Json.obj())))
-      missUpdate<- server.handle(JsonRpcMessage.Request(RequestId.Num(5), "tasks/update", Some(Json.obj("taskId" -> "nope".asJson))))
+      missUpdate<- server.handle(JsonRpcMessage.Request(RequestId.Num(5), "tasks/update", Some(Json.obj("taskId" -> "nope".asJson, "inputResponses" -> Json.obj()))))
       _         <- store.create("t-upd", 50L, 10000L, IO.unit, None)
       _         <- store.requireInput("t-upd", Json.obj())
       okUpdate  <- server.handle(JsonRpcMessage.Request(RequestId.Num(6), "tasks/update", Some(Json.obj("taskId" -> "t-upd".asJson, "inputResponses" -> Json.obj()))))
@@ -262,3 +262,20 @@ class TaskServerSuite extends CatsEffectSuite:
       assertEquals(notif, None)
       assertEquals(otherReq, None)
       assert(snaps.forall(_.exists(_.status == TaskStatus.Failed)))
+
+  test("TaskServer defaults, discover without extensions, and discover failure passthrough"):
+    val minimal = new ServerHandler[IO]:
+      def handle(message: JsonRpcMessage): IO[Option[JsonRpcMessage]] = message match
+        case JsonRpcMessage.Request(id, m, _) if (m: String) == Method.Discover.wire =>
+          IO.pure(Some(JsonRpcMessage.Success(id, Json.obj("capabilities" -> Json.obj()))))
+        case _ => IO.pure(None)
+      def handleRecovering(message: JsonRpcMessage)(using cats.ApplicativeThrow[IO]): IO[Option[JsonRpcMessage]] = handle(message)
+    for
+      random <- SecureRandom.javaSecuritySecureRandom[IO]
+      store  <- TaskStore.inMemory[IO]()
+      srv    = TaskServer[IO](minimal, store, random)
+      d1     <- srv.handle(JsonRpcMessage.Request(RequestId.Num(1), Method.Discover.wire, None))
+      d2     <- srv.handleRecovering(JsonRpcMessage.Request(RequestId.Num(2), "ping", None))
+    yield
+      assert(d1.get.asInstanceOf[JsonRpcMessage.Success].result.hcursor.downField("capabilities").downField("extensions").downField(CapabilityName).succeeded)
+      assertEquals(d2, None)

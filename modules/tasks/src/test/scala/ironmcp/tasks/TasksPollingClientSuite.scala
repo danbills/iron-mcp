@@ -186,4 +186,28 @@ class TasksPollingClientSuite extends CatsEffectSuite:
       _ = assert(cErr.left.exists(_.isInstanceOf[TaskCancelledException]))
       badNotif <- mc.request[Json]("bad/notif").attempt
       _ = assert(badNotif.left.exists(_.isInstanceOf[McpClientError.Malformed]))
+      // Update with default empty map, Failed/Completed-no-result polling, and malformed tool/request replies
+      updDef <- mc.updateTask("t-mock").attempt
+      _ = assert(updDef.isLeft)
+      badCall <- mc.callToolAsTask("anything").attempt
+      _ = assert(badCall.left.exists(_.isInstanceOf[McpClientError.Malformed]))
+      // Test Failed and Completed-without-result in pollUntilTerminal
+      failTransport = new ironmcp.client.ClientTransport[IO]:
+        def request(req: JsonRpcMessage.Request): IO[JsonRpcMessage] = (req.method: String) match
+          case "tools/call" =>
+            val tid = req.params.flatMap(_.hcursor.get[String]("name").toOption).getOrElse("t-fail")
+            IO.pure(JsonRpcMessage.Success(req.id, CreateTaskResult(taskId = tid, pollIntervalMs = Some(1L)).asJson))
+          case "tasks/get" =>
+            val tid = req.params.flatMap(_.hcursor.get[String]("taskId").toOption).getOrElse("")
+            val snap = if tid == "t-fail" then GetTaskResult("t-fail", TaskStatus.Failed) else GetTaskResult("t-nores", TaskStatus.Completed, result = None)
+            IO.pure(JsonRpcMessage.Success(req.id, snap.asJson))
+          case _ => IO.pure(JsonRpcMessage.Success(req.id, Json.fromString("not-an-object")))
+        def notify(notification: JsonRpcMessage.Notification): IO[Unit] = IO.unit
+      fc <- TasksClient[IO](failTransport)
+      fErr <- fc.callToolWithPolling("t-fail", maxPolls = 2).attempt
+      nErr <- fc.callToolWithPolling("t-nores", maxPolls = 2).attempt
+      dErr <- fc.request[Int]("other").attempt
+      _ = assert(fErr.left.exists(_.isInstanceOf[McpClientError.Rpc]))
+      _ = assert(nErr.left.exists(_.isInstanceOf[McpClientError.Malformed]))
+      _ = assert(dErr.left.exists(_.isInstanceOf[McpClientError.Malformed]))
     yield ()

@@ -5,7 +5,7 @@ import cats.effect.IO
 import io.circe.Json
 import io.circe.syntax.*
 import io.github.iltotore.iron.autoRefine
-import ironmcp.protocol.*
+import ironmcp.protocol.{Root as _, *}
 import ironmcp.server.*
 import munit.CatsEffectSuite
 import org.http4s.*
@@ -65,33 +65,33 @@ class KeycloakAndScopedSuite extends CatsEffectSuite:
       assert(badUrl.left.exists(_.isInstanceOf[OAuthError.Insecure]))
 
   test("ScopedTools, ScopedResources, and ScopedPrompts enforce AuthPolicy"):
-    val toolOk = McpTool[IO]("ok_tool", "allowed")(_ => IO.pure(ToolOutput.text("yes")))
-    val toolNo = McpTool[IO]("no_tool", "denied")(_ => IO.pure(ToolOutput.text("no")))
-    val tools  = ToolSet.of(toolOk, toolNo)
+    val toolOk = McpTool[IO](Tool("ok_tool", description = Some("allowed"), inputSchema = ObjectSchema.empty), _ => IO.pure(CallToolResult.text("yes")), None)
+    val toolNo = McpTool[IO](Tool("no_tool", description = Some("denied"), inputSchema = ObjectSchema.empty), _ => IO.pure(CallToolResult.text("no")), None)
+    val tools  = ToolSet.of[IO](toolOk, toolNo)
 
     val resources = new ResourceProvider[IO]:
       def list(params: ListResourcesParams): IO[ListResourcesResult] =
-        IO.pure(ListResourcesResult(List(Resource("file:///ok/a", "a"), Resource("file:///secret/b", "b"))))
+        IO.pure(ListResourcesResult(List(Resource("file:///ok/a", "a"), Resource("file:///secret/b", "b")), 60000L, CacheScope.`public`))
       def read(params: ReadResourceParams): IO[ReadResourceResult | InputRequiredResult] =
-        IO.pure(ReadResourceResult(List(ResourceContents.Text(params.uri, "data"))))
+        IO.pure(ReadResourceResult(List(ResourceContents.Text(params.uri, "data")), 60000L, CacheScope.`public`))
       override def templates(params: ListResourcesParams): IO[ListResourceTemplatesResult] =
-        IO.pure(ListResourceTemplatesResult(List(ResourceTemplate("file:///ok/{x}", "tpl"))))
+        IO.pure(ListResourceTemplatesResult(List(ResourceTemplate("file:///ok/{x}", "tpl")), 60000L, CacheScope.`public`))
 
     val prompts = new PromptProvider[IO]:
       def list(params: ListPromptsParams): IO[ListPromptsResult] =
-        IO.pure(ListPromptsResult(List(Prompt("ok_prompt"), Prompt("no_prompt"))))
+        IO.pure(ListPromptsResult(List(Prompt("ok_prompt"), Prompt("no_prompt")), 60000L, CacheScope.`public`))
       def get(params: GetPromptParams): IO[GetPromptResult | InputRequiredResult] =
         IO.pure(GetPromptResult(messages = List(PromptMessage(Role.user, ContentBlock.Text("hi")))))
 
     val policy = AuthPolicy(
       tools = Map("ok_tool" -> Access.Public),
-      resourcePrefixes = List("file:///ok/" -> Access.Public),
+      resources = List("file:///ok/" -> Access.Public),
       prompts = Map("ok_prompt" -> Access.Public)
     )
-    val meta = RequestMeta(LatestProtocolVersion)
-    val st   = ScopedTools(tools, policy, None)
-    val sr   = new ScopedResources(resources, policy, None)
-    val sp   = new ScopedPrompts(prompts, policy, None)
+    val meta = RequestMeta(LatestProtocolVersion, ClientCapabilities.none)
+    val st   = ScopedTools[IO](tools, policy, None)
+    val sr   = new ScopedResources[IO](resources, policy, None)
+    val sp   = new ScopedPrompts[IO](prompts, policy, None)
 
     for
       tl  <- st.list(ListToolsParams(meta))
@@ -107,7 +107,7 @@ class KeycloakAndScopedSuite extends CatsEffectSuite:
     yield
       assertEquals(tl.tools.map(_.name: String), List("ok_tool"))
       assertEquals(tl.cacheScope, CacheScope.`private`)
-      assertEquals(tc1.asInstanceOf[CallToolResult].isError, None)
+      assertEquals(tc1.asInstanceOf[CallToolResult].isError, Some(false))
       assertEquals(tc2.asInstanceOf[CallToolResult].isError, Some(true))
       assertEquals(rl.resources.map(_.uri: String), List("file:///ok/a"))
       assertEquals(rt.cacheScope, CacheScope.`private`)
