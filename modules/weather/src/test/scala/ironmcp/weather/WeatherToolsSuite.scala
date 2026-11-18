@@ -131,3 +131,48 @@ class WeatherToolsSuite extends CatsEffectSuite:
       assertEquals(pt, PointProperties(Some("https://nws.test/forecast"), None))
       assertEquals(al.flatMap(_.event), List("Flood Warning"))
       assertEquals(all, List("https://nws.test/points/39.7,-97.1", "https://nws.test/alerts/active?point=39.7,-97.1&event=Flood+Warning"))
+
+  test("NwsHttp4s covers Forecast, Stations, LatestObservation, ObservationHistory, and errors"):
+    val forecast = Json.obj("properties" -> Json.obj("periods" -> Json.arr()))
+    val stations = Json.obj("features" -> Json.arr(Json.obj("properties" -> Json.obj("stationIdentifier" -> "KORD".asJson))))
+    val obs      = Json.obj("properties" -> Json.obj("textDescription" -> "Clear".asJson))
+    val hist     = Json.obj("features" -> Json.arr(obs))
+    val app = HttpApp[IO] { req =>
+      val target = req.uri.renderString
+      IO.pure(
+        if target.endsWith("/forecast") || target.endsWith("/forecasts/auto") then Response[IO](Status.Ok).withEntity(forecast)
+        else if target.endsWith("/stations") then Response[IO](Status.Ok).withEntity(stations)
+        else if target.endsWith("/observations/latest") then Response[IO](Status.Ok).withEntity(obs)
+        else if target.contains("/observations?limit=") && target.contains("/KORD/") then Response[IO](Status.Ok).withEntity(hist)
+        else Response[IO](Status.InternalServerError)
+      )
+    }
+    val nws = NwsHttp4s(Client.fromHttpApp(app), base = "https://nws.test")
+    for
+      fc1  <- nws(NwsOp.Forecast(Some("https://nws.test/forecast")))
+      fc2  <- nws(NwsOp.Forecast(None))
+      st   <- nws(NwsOp.Stations("https://nws.test/stations"))
+      lo   <- nws(NwsOp.LatestObservation("KORD"))
+      hOk  <- nws(NwsOp.ObservationHistory("KORD", 5))
+      hErr <- nws(NwsOp.ObservationHistory("KBAD", 5))
+      fail <- nws(NwsOp.Point(0.0, 0.0)).attempt
+    yield
+      assertEquals(fc1.periods, Nil)
+      assertEquals(fc2.periods, Nil)
+      assertEquals(st.map(_.stationIdentifier), List("KORD"))
+      assertEquals(lo.textDescription, Some("Clear"))
+      assertEquals(hOk.map(_.flatMap(_.textDescription)), Right(List("Clear")))
+      assert(hErr.isLeft)
+      assert(fail.left.exists(_.getMessage.contains("GET https://nws.test/points/0.0,0.0 failed:")))
+
+  test("conditions with empty stations and steady pressureTrend"):
+    type ErrOr[A] = Either[Throwable, A]
+    val emptyStations: NwsOp ~> ErrOr = new (NwsOp ~> ErrOr):
+      def apply[A](op: NwsOp[A]): ErrOr[A] = op match
+        case NwsOp.Point(_, _) => Right(PointProperties(None, Some("https://nws.test/stations")))
+        case NwsOp.Stations(_) => Right(Nil)
+        case other             => Left(new RuntimeException(s"unexpected $other"))
+    val res = WeatherTools.conditions[NwsOp](GetConditions(39.7, -97.1)).foldMap(emptyStations)
+    assertEquals(res, Right(Left("get_conditions failed: no observing station found near this point")))
+    assertEquals(WeatherTools.pressureTrend(List(1013.2, 1013.4)), "steady (~2 readings)")
+    val _ = Nws[NwsOp]

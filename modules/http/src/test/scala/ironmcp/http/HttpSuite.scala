@@ -230,3 +230,51 @@ class HttpProgressSuite extends CatsEffectSuite:
     yield
       assert(result.isInstanceOf[ironmcp.protocol.CallToolResult])
       assertEquals(count, 3)
+
+  test("rejects malformed JSON, client responses, and header mismatches"):
+    import ironmcp.protocol.*
+    def send(body: String, hdrs: (String, String)*): IO[Response[IO]] =
+      val hs = Headers(hdrs.map((k, v) => Header.Raw(CIString(k), v))*)
+      app.run(Request[IO](org.http4s.Method.POST, Uri.unsafeFromString("/mcp"), headers = hs).withEntity(body))
+
+    val baseHdrs = Seq(
+      "MCP-Protocol-Version" -> LatestProtocolVersion,
+      "Mcp-Method"           -> "tools/call",
+      "Mcp-Name"             -> McpHeaders.encode("countdown")
+    )
+    val callBody = """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"countdown","arguments":{"steps":1}}}"""
+    val metaMismatchBody =
+      s"""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"countdown","_meta":{"${ReservedMeta.ProtocolVersion}":"1999-01-01"}}}"""
+    val clientReply = """{"jsonrpc":"2.0","id":1,"result":{}}"""
+    for
+      badJson     <- send("{not json", baseHdrs*)
+      cReply      <- send(clientReply, baseHdrs*)
+      badMetaVer  <- send(metaMismatchBody, baseHdrs*)
+      noMethod    <- send(callBody, "MCP-Protocol-Version" -> LatestProtocolVersion)
+      wrongMethod <- send(callBody, "MCP-Protocol-Version" -> LatestProtocolVersion, "Mcp-Method" -> "tools/list")
+      noName      <- send(callBody, "MCP-Protocol-Version" -> LatestProtocolVersion, "Mcp-Method" -> "tools/call")
+      badNameB64  <- send(callBody, "MCP-Protocol-Version" -> LatestProtocolVersion, "Mcp-Method" -> "tools/call", "Mcp-Name" -> "!!!not-base64!!!")
+      badProto    <- send(callBody, "MCP-Protocol-Version" -> "1999-01-01", "Mcp-Method" -> "tools/call", "Mcp-Name" -> McpHeaders.encode("countdown"))
+    yield
+      assertEquals(badJson.status, Status.BadRequest)
+      assertEquals(cReply.status, Status.BadRequest)
+      assertEquals(badMetaVer.status, Status.BadRequest)
+      assertEquals(noMethod.status, Status.BadRequest)
+      assertEquals(wrongMethod.status, Status.BadRequest)
+      assertEquals(noName.status, Status.BadRequest)
+      assertEquals(badNameB64.status, Status.BadRequest)
+      assertEquals(badProto.status, Status.BadRequest)
+
+  test("server returning None yields 202 Accepted"):
+    import ironmcp.protocol.*
+    val emptyHandler = new ironmcp.server.ServerHandler[IO]:
+      def handle(message: JsonRpcMessage): IO[Option[JsonRpcMessage]] = IO.pure(None)
+      def handleRecovering(message: JsonRpcMessage)(using cats.ApplicativeThrow[IO]): IO[Option[JsonRpcMessage]] = IO.pure(None)
+    val routes = McpHttp.routes(emptyHandler).orNotFound
+    routes.run(
+      Request[IO](
+        org.http4s.Method.POST,
+        Uri.unsafeFromString("/mcp"),
+        headers = Headers(Header.Raw(CIString("MCP-Protocol-Version"), LatestProtocolVersion), Header.Raw(CIString("Mcp-Method"), "ping"))
+      ).withEntity("""{"jsonrpc":"2.0","id":1,"method":"ping"}""")
+    ).map(r => assertEquals(r.status, Status.Accepted))

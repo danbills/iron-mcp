@@ -99,5 +99,8 @@ class OtelClientSuite extends CatsEffectSuite:
         metrics = metricReader.collectAllMetrics().asScala.toList
         cliDur = metrics.find(_.getName == McpSemantics.Metrics.ClientOperationDuration)
         _ = assert(cliDur.isDefined)
+        _ <- client.listTools()
+        rpcErr <- client.readResource("file:///missing").attempt
+        _ = assert(rpcErr.isLeft)
       yield ()
     }

@@ -198,3 +198,56 @@ class OtelHttpSuite extends CatsEffectSuite:
         assertEquals(span.getAttributes.get(JAttributeKey.stringKey("mcp.error_rung")), "tool_error")
       }
     }
+
+  test("OtelHttp rejects bad origin/host/size/json/responses/headers, handles notifications and routesFor Left"):
+    setup().flatMap { (app, _, _) =>
+      val base = standardHeaders
+      for
+        rOrig   <- post(app, callBody("echo"), ("Origin" -> "https://evil.example") :: base)
+        rHost   <- post(app, callBody("echo"), base.map { case ("Host", _) => ("Host", "evil.example"); case x => x })
+        rSize   <- {
+          val small = OtelHttp.routes(McpServer[IO](Implementation("x", "0")), McpTelemetry.noop[IO].unsafeRunSync(), McpHttp.Config(maxBodyBytes = 10)).orNotFound
+          post(small, callBody("echo"))
+        }
+        rJson   <- post(app, "{bad", base)
+        rNotif  <- post(app, """{"jsonrpc":"2.0","method":"notifications/initialized"}""", base)
+        rResp   <- post(app, """{"jsonrpc":"2.0","id":1,"result":{}}""", base)
+        rNoVer  <- post(app, callBody("echo"), Nil)
+        rBadVer <- post(app, callBody("echo"), ("MCP-Protocol-Version" -> "1999-01-01") :: base.tail)
+        rMetaV  <- post(app, callBody("echo", Some(Json.obj(ReservedMeta.ProtocolVersion -> Json.fromString("1999-01-01")))), base)
+        rNoMeth <- post(app, callBody("echo"), List("MCP-Protocol-Version" -> LatestProtocolVersion, "Host" -> "localhost:5000"))
+        rBadMet <- post(app, callBody("echo"), List("MCP-Protocol-Version" -> LatestProtocolVersion, "Mcp-Method" -> "tools/list", "Host" -> "localhost:5000"))
+        rNoName <- post(app, callBody("echo"), List("MCP-Protocol-Version" -> LatestProtocolVersion, "Mcp-Method" -> "tools/call", "Host" -> "localhost:5000"))
+        rBadB64 <- post(app, callBody("echo"), List("MCP-Protocol-Version" -> LatestProtocolVersion, "Mcp-Method" -> "tools/call", "Mcp-Name" -> "!!!", "Host" -> "localhost:5000"))
+        rWrongN <- post(app, callBody("echo"), List("MCP-Protocol-Version" -> LatestProtocolVersion, "Mcp-Method" -> "tools/call", "Mcp-Name" -> McpHeaders.encode("other"), "Host" -> "localhost:5000"))
+        rList   <- post(app, """{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""", List("MCP-Protocol-Version" -> LatestProtocolVersion, "Mcp-Method" -> "tools/list", "Host" -> "localhost:5000"))
+        rLeft   <- {
+          val denied = OtelHttp.routesFor[IO](McpTelemetry.noop[IO].unsafeRunSync())(_ => IO.pure(Left(Response[IO](Status.Unauthorized)))).orNotFound
+          post(denied, """{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""", List("MCP-Protocol-Version" -> LatestProtocolVersion, "Mcp-Method" -> "tools/list", "Host" -> "localhost:5000"))
+        }
+      yield
+        assertEquals(rOrig._1, Status.Forbidden)
+        assertEquals(rHost._1, Status.Forbidden)
+        assertEquals(rSize._1, Status.PayloadTooLarge)
+        assertEquals(rJson._1, Status.BadRequest)
+        assertEquals(rNotif._1, Status.Accepted)
+        assertEquals(rResp._1, Status.BadRequest)
+        assertEquals(rNoVer._1, Status.BadRequest)
+        assertEquals(rBadVer._1, Status.BadRequest)
+        assertEquals(rMetaV._1, Status.BadRequest)
+        assertEquals(rNoMeth._1, Status.BadRequest)
+        assertEquals(rBadMet._1, Status.BadRequest)
+        assertEquals(rNoName._1, Status.BadRequest)
+        assertEquals(rBadB64._1, Status.BadRequest)
+        assertEquals(rWrongN._1, Status.BadRequest)
+        assertEquals(rList._1, Status.Ok)
+        assertEquals(rLeft._1, Status.Unauthorized)
+    }
+
+  test("OtelStdio.pipe instruments stdio lines and McpTelemetry builders work"):
+    for
+      otel <- McpTelemetry.noop[IO]
+      t2 = otel.withDudDetector(DudDetector.never).withKnownTools(Set("echo"))
+      srv = McpServer[IO](Implementation("stdio", "0"), tools = Some(ToolSet.of(echo)))
+      out <- fs2.Stream.emit(callBody("echo")).through(OtelStdio.pipe(srv, t2)).compile.toList
+    yield assert(out.exists(_.contains("Echo: hi")))

@@ -1,6 +1,6 @@
 import sbtcrossproject.CrossPlugin.autoImport.{crossProject, CrossType}
 
-val scala3Version     = "3.9.0"
+val scala3Version     = "3.10.1"
 val ironVersion       = "3.3.2"
 val circeVersion      = "0.14.16"
 val catsEffectVersion = "3.7.0"

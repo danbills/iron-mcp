@@ -54,3 +54,13 @@ class TaskModelsSuite extends FunSuite:
       case ContentBlock.Text(t, _, _) => t
       case _                          => ""
     assertEquals(inlinedText, "Report generated successfully.")
+
+  test("TaskStatus input_required and unknown status, plus default case class fields"):
+    assertEquals((TaskStatus.InputRequired: TaskStatus).asJson.noSpaces, "\"input_required\"")
+    assertEquals(io.circe.parser.decode[TaskStatus]("\"input_required\""), Right(TaskStatus.InputRequired))
+    assert(io.circe.parser.decode[TaskStatus]("\"bogus\"").isLeft)
+    val c = CreateTaskResult(taskId = "t1")
+    val g = GetTaskResult(taskId = "t1", status = TaskStatus.Working)
+    val x = CancelTaskResult(taskId = "t1")
+    val u = UpdateTaskParams(taskId = "t1")
+    assertEquals((c.resultType, c.status, g.result, x.status, u.inputResponses), ("task", TaskStatus.Working, None, TaskStatus.Cancelled, Map.empty))

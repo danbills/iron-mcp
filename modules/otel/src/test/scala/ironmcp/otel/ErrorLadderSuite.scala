@@ -45,3 +45,11 @@ class ErrorLadderSuite extends FunSuite:
     assert(combined.isDud("tool_a", CallToolResult(Nil)))
     assert(combined.isDud("tool_b", CallToolResult(Nil)))
     assert(!combined.isDud("tool_c", CallToolResult(Nil)))
+
+  test("DudDetector.never, DudDetector.apply, and default on non-text content"):
+    assert(!DudDetector.never.isDud("any", CallToolResult(Nil)))
+    val custom = DudDetector((name, _) => name == "dud")
+    assert(custom.isDud("dud", CallToolResult(Nil)))
+    assert(!custom.isDud("ok", CallToolResult(Nil)))
+    val img = CallToolResult(List(ContentBlock.Image("abc", "image/png")))
+    assert(!DudDetector.default.isDud("any", img))

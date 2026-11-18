@@ -131,3 +131,25 @@ a::after { content: "<\/style>$1"; } /* <\/STYLE> */
       missing match
         case Left(McpClientError.Rpc(error)) => assertEquals(error.code.code, -32002)
         case other                           => fail(s"unexpected $other")
+
+  test("Visibility, UiToolMeta, UiCsp, UiResourceMeta codecs and defaults, and UiHtml fallback"):
+    import io.circe.parser.decode
+    import io.circe.syntax.*
+    assertEquals(decode[Visibility]("\"model\""), Right(Visibility.Model))
+    assertEquals(decode[Visibility]("\"app\""), Right(Visibility.App))
+    assert(decode[Visibility]("\"other\"").isLeft)
+
+    val tm = UiToolMeta()
+    assertEquals(decode[UiToolMeta](tm.asJson.noSpaces), Right(tm))
+
+    val csp = UiCsp()
+    assertEquals(decode[UiCsp](csp.asJson.noSpaces), Right(csp))
+
+    val rm = UiResourceMeta()
+    assertEquals(decode[UiResourceMeta](rm.asJson.noSpaces), Right(rm))
+
+    val res = UiResource("ui://a/b.html", "ab", "<p>hi</p>")
+    assertEquals(res.meta, UiResourceMeta())
+
+    val noBody = UiHtml.inlineScript("<p>hi</p>", "console.log(1)")
+    assertEquals(noBody, "<p>hi</p>\n<script>\nconsole.log(1)\n</script>")

@@ -8,7 +8,7 @@ addSbtPlugin("org.portable-scala" % "sbt-scala-native-crossproject" % "1.4.0")
 // only the two pieces it would have bundled. Uploading to the Central Portal
 // is built into sbt 2 itself (`sonaUpload` / `sonaRelease`).
 addSbtPlugin("com.github.sbt" % "sbt-dynver" % "5.1.1")  // version from the git tag
-addSbtPlugin("com.github.sbt" % "sbt-pgp"    % "2.3.1")  // publishSigned
+addSbtPlugin("com.github.sbt" % "sbt-pgp"    % "2.4.0")  // publishSigned
 
 // Scala.js, for the wire types (`protocol`) and the MCP Apps View library (`appsView`).
 addSbtPlugin("org.scala-js"       % "sbt-scalajs"              % "1.22.0")

@@ -15,7 +15,21 @@ import scala.jdk.CollectionConverters.*
 class OtelAuthSuite extends CatsEffectSuite:
 
   private def event(allowed: Boolean, reason: String) =
-    AuthEvent(0L, allowed, reason, None, "tools/call", "tool:x", Some("alice"), None, None, None, None, Set("a"), Set.empty)
+    AuthEvent(
+      0L,
+      allowed,
+      reason,
+      None,
+      "tools/call",
+      "tool:x",
+      Some("alice"),
+      Some("client-1"),
+      Some("https://idp.example"),
+      Some("jkt-1"),
+      None,
+      Set("a"),
+      Set("a")
+    )
 
   test("decisions are counted by outcome and reason"):
     for

@@ -73,3 +73,38 @@ class TaskStoreSuite extends CatsEffectSuite:
       assertEquals(bobCancel, None)
       assertEquals(bobUpdate, None)
       assertEquals(after.map(_.status), Some(TaskStatus.Working))
+
+  test("TaskStore defaults non-positive intervals, handles requireInput/update, terminal no-ops, and TTL eviction"):
+    import io.circe.Json
+    import io.circe.syntax.*
+    import ironmcp.protocol.ErrorCode
+    import scala.concurrent.duration.*
+    for
+      store <- TaskStore.inMemory[IO](defaultPollIntervalMs = 250L, defaultTtlMs = 1L)
+      c0    <- store.create("t-def", pollIntervalMs = 0L, ttlMs = 0L, cancelHook = IO.unit, owner = None)
+      _     <- store.requireInput("t-def", Json.obj("prompt" -> "name?".asJson))
+      g1    <- store.get("t-def", None)
+      u1    <- store.update("t-def", Map("name" -> "ada".asJson), None)
+      u2    <- store.update("t-def", Map.empty, None)
+      _     <- store.fail("t-def", JsonRpcError(ErrorCode.InternalError, "boom"))
+      // Terminal no-ops
+      _     <- store.complete("t-def", CallToolResult(Nil))
+      _     <- store.fail("t-def", JsonRpcError(ErrorCode.InternalError, "again"))
+      _     <- store.requireInput("t-def", Json.Null)
+      cTerm <- store.cancel("t-def", None)
+      cMiss <- store.cancel("missing", None)
+      uMiss <- store.update("missing", Map.empty, None)
+      _     <- IO.sleep(1100.millis)
+      // Trigger TTL eviction on create
+      _     <- store.create("t-new", pollIntervalMs = 100L, ttlMs = 100L, cancelHook = IO.unit, owner = None)
+      evicted <- store.get("t-def", None)
+    yield
+      assertEquals(c0.pollIntervalMs, Some(250L))
+      assertEquals(c0.ttlMs, Some(1L))
+      assertEquals(g1.map(_.status), Some(TaskStatus.InputRequired))
+      assertEquals(u1.map(_.status), Some(TaskStatus.Working))
+      assertEquals(u2.map(_.status), Some(TaskStatus.Working))
+      assertEquals(cTerm.map(_.status), Some(TaskStatus.Failed))
+      assertEquals(cMiss, None)
+      assertEquals(uMiss, None)
+      assertEquals(evicted, None)

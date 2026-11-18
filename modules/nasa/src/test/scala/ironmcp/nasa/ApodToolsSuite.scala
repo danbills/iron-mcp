@@ -87,3 +87,4 @@ class ApodToolsSuite extends CatsEffectSuite:
       assertEquals(text(dateErr), "get_apod failed: APOD API error 400: Date must be between Jun 16, 1995 and today.")
       assertEquals(text(keyErr), "get_apod failed: APOD API error 403: An invalid api_key was supplied.")
       assert(!text(dateErr).contains("s3cret") && !text(keyErr).contains("s3cret"))
+      val _ = Apod[ApodOp]

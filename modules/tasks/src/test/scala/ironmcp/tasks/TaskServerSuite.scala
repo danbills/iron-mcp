@@ -118,7 +118,7 @@ class TaskServerSuite extends CatsEffectSuite:
       _ = assertEquals(json.hcursor.get[TaskStatus]("status"), Right(TaskStatus.Working))
 
       // Wait a moment for the background fiber to complete
-      _ <- IO.sleep(200.millis)
+      _ <- IO.sleep(500.millis)
 
       // Poll tasks/get
       getReq = JsonRpcMessage.Request(
@@ -206,3 +206,59 @@ class TaskServerSuite extends CatsEffectSuite:
       assertEquals(snapshot.hcursor.downField("error").get[Int]("code"), Right(-32603))
       assert(!snapshot.noSpaces.contains("hunter2"))
       assertEquals(hooked, List("db password is hunter2"))
+
+  test("TaskServer handles invalid params, tasks/update, notifications, handleRecovering, and underlying failure shapes"):
+    import cats.syntax.all.*
+    import io.circe.syntax.*
+    val custom = new ServerHandler[IO]:
+      def handle(message: JsonRpcMessage): IO[Option[JsonRpcMessage]] = message match
+        case JsonRpcMessage.Request(id, "initialize", _) =>
+          IO.pure(Some(JsonRpcMessage.Success(id, Json.obj("capabilities" -> Json.obj("extensions" -> Json.obj("other" -> Json.obj()))))))
+        case JsonRpcMessage.Request(id, "tools/call", Some(p)) =>
+          p.hcursor.get[String]("name").getOrElse("") match
+            case "malformed" => IO.pure(Some(JsonRpcMessage.Success(id, Json.obj("bad" -> true.asJson))))
+            case "rpc_fail"  => IO.pure(Some(JsonRpcMessage.Failure(Some(id), JsonRpcError(ErrorCode.InvalidParams, "bad arg"))))
+            case "empty"     => IO.pure(None)
+            case "mcp_err"   => IO.raiseError(ironmcp.server.McpException.resourceNotFound("r"))
+            case _           => IO.pure(Some(JsonRpcMessage.Success(id, CallToolResult(Nil).asJson)))
+        case _ => IO.pure(None)
+      def handleRecovering(message: JsonRpcMessage)(using cats.ApplicativeThrow[IO]): IO[Option[JsonRpcMessage]] = handle(message)
+
+    for
+      random <- SecureRandom.javaSecuritySecureRandom[IO]
+      store  <- TaskStore.inMemory[IO](defaultPollIntervalMs = 50L)
+      server = TaskServer[IO](
+        underlying = custom,
+        store = store,
+        random = random,
+        taskTools = Set("malformed", "rpc_fail", "empty", "mcp_err")
+      )
+      badGet    <- server.handle(JsonRpcMessage.Request(RequestId.Num(1), "tasks/get", Some(Json.obj())))
+      badCancel <- server.handle(JsonRpcMessage.Request(RequestId.Num(2), "tasks/cancel", Some(Json.obj())))
+      missCancel<- server.handle(JsonRpcMessage.Request(RequestId.Num(3), "tasks/cancel", Some(Json.obj("taskId" -> "nope".asJson))))
+      badUpdate <- server.handle(JsonRpcMessage.Request(RequestId.Num(4), "tasks/update", Some(Json.obj())))
+      missUpdate<- server.handle(JsonRpcMessage.Request(RequestId.Num(5), "tasks/update", Some(Json.obj("taskId" -> "nope".asJson))))
+      _         <- store.create("t-upd", 50L, 10000L, IO.unit, None)
+      _         <- store.requireInput("t-upd", Json.obj())
+      okUpdate  <- server.handle(JsonRpcMessage.Request(RequestId.Num(6), "tasks/update", Some(Json.obj("taskId" -> "t-upd".asJson, "inputResponses" -> Json.obj()))))
+      disc      <- server.handleRecovering(JsonRpcMessage.Request(RequestId.Num(7), "initialize", None))
+      notif     <- server.handle(JsonRpcMessage.Notification("notifications/cancelled", None))
+      otherReq  <- server.handle(JsonRpcMessage.Request(RequestId.Num(8), "ping", None))
+      r1 <- server.handle(JsonRpcMessage.Request(RequestId.Num(9), "tools/call", Some(Json.obj("name" -> "malformed".asJson, "_meta" -> tasksMeta))))
+      r2 <- server.handle(JsonRpcMessage.Request(RequestId.Num(10), "tools/call", Some(Json.obj("name" -> "rpc_fail".asJson, "_meta" -> tasksMeta))))
+      r3 <- server.handle(JsonRpcMessage.Request(RequestId.Num(11), "tools/call", Some(Json.obj("name" -> "empty".asJson, "_meta" -> tasksMeta))))
+      r4 <- server.handle(JsonRpcMessage.Request(RequestId.Num(12), "tools/call", Some(Json.obj("name" -> "mcp_err".asJson, "_meta" -> tasksMeta))))
+      _  <- IO.sleep(150.millis)
+      tIds = List(r1, r2, r3, r4).map(_.get.asInstanceOf[JsonRpcMessage.Success].result.hcursor.get[String]("taskId").toOption.get)
+      snaps <- tIds.traverse(id => store.get(id, None))
+    yield
+      assert(badGet.exists(_.isInstanceOf[JsonRpcMessage.Failure]))
+      assert(badCancel.exists(_.isInstanceOf[JsonRpcMessage.Failure]))
+      assert(missCancel.exists(_.isInstanceOf[JsonRpcMessage.Failure]))
+      assert(badUpdate.exists(_.isInstanceOf[JsonRpcMessage.Failure]))
+      assert(missUpdate.exists(_.isInstanceOf[JsonRpcMessage.Failure]))
+      assert(okUpdate.exists(_.isInstanceOf[JsonRpcMessage.Success]))
+      assert(disc.get.asInstanceOf[JsonRpcMessage.Success].result.hcursor.downField("capabilities").downField("extensions").downField("other").succeeded)
+      assertEquals(notif, None)
+      assertEquals(otherReq, None)
+      assert(snaps.forall(_.exists(_.status == TaskStatus.Failed)))

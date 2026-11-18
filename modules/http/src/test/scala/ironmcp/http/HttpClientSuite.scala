@@ -143,3 +143,33 @@ class HttpClientSuite extends CatsEffectSuite:
       case Left(McpClientError.Http(502, Nil, "upstream down")) => ()
       case other                                                 => fail(s"unexpected $other")
     }
+
+  test("notify success/failure, 200 non-JSON-RPC body, and SSE stream ending without response or with Failure"):
+    import ironmcp.protocol.*
+    val okApp = HttpApp[IO] { _ => IO.pure(Response[IO](Status.Accepted)) }
+    val failApp = HttpApp[IO] { _ => IO.pure(Response[IO](Status.InternalServerError).withEntity("err")) }
+    val weirdOk = HttpApp[IO] { _ => IO.pure(Response[IO](Status.Ok).withEntity("not json")) }
+    val emptySse = HttpApp[IO] { _ =>
+      IO.pure(Response[IO](Status.Ok).withEntity("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n").withContentType(headers.`Content-Type`(MediaType.`text/event-stream`)))
+    }
+    val failSse = HttpApp[IO] { _ =>
+      IO.pure(Response[IO](Status.Ok).withEntity("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"nope\"}}\n\n").withContentType(headers.`Content-Type`(MediaType.`text/event-stream`)))
+    }
+    val tOk      = McpHttpClient.transport(Client.fromHttpApp(okApp), endpoint)
+    val tFail    = McpHttpClient.transport(Client.fromHttpApp(failApp), endpoint)
+    val tWeird   = McpHttpClient.transport(Client.fromHttpApp(weirdOk), endpoint)
+    val tEmpty   = McpHttpClient.transport(Client.fromHttpApp(emptySse), endpoint)
+    val tFailSse = McpHttpClient.transport(Client.fromHttpApp(failSse), endpoint)
+    val notif    = new JsonRpcMessage.Notification("notifications/initialized", None)
+    val req      = new JsonRpcMessage.Request(RequestId.Num(1L), "ping", None)
+    for
+      _     <- tOk.notify(notif)
+      nFail <- tFail.notify(notif).attempt
+      wErr  <- tWeird.request(req).attempt
+      eErr  <- tEmpty.request(req).attempt
+      fSse  <- tFailSse.request(req)
+    yield
+      assert(nFail.left.exists(_.isInstanceOf[McpClientError.Http]))
+      assert(wErr.left.exists(_.isInstanceOf[McpClientError.Malformed]))
+      assert(eErr.left.exists(_.isInstanceOf[McpClientError.Closed]))
+      assert(fSse.isInstanceOf[JsonRpcMessage.Failure])

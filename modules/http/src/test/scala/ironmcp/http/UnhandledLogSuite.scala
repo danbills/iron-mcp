@@ -23,3 +23,9 @@ class UnhandledLogSuite extends CatsEffectSuite:
         assertEquals(thrown, error)
         assert(!text.contains("hunter2"))
       case other => fail(s"expected one error with the exception, got $other")
+
+  test("describe formats notifications, responses, error responses, and text ids"):
+    assertEquals(UnhandledLog.describe(JsonRpcMessage.Notification("notifications/progress", None)), "notifications/progress (notification)")
+    assertEquals(UnhandledLog.describe(JsonRpcMessage.Success(RequestId.Text("abc"), Json.Null)), "a response (id \"abc\")")
+    assertEquals(UnhandledLog.describe(JsonRpcMessage.Failure(None, JsonRpcError(ErrorCode.InternalError, "err"))), "an error response (id null)")
+    assertEquals(UnhandledLog.describe(JsonRpcMessage.Failure(Some(RequestId.Num(9L)), JsonRpcError(ErrorCode.InternalError, "err"))), "an error response (id 9)")

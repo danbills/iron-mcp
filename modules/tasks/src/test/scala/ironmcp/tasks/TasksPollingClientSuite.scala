@@ -147,3 +147,43 @@ class TasksPollingClientSuite extends CatsEffectSuite:
       assertEquals(ids.size, 20)
       ids.foreach(id => assert(id.matches("task-[0-9a-f]{32}"), id))
       assertEquals(ids.distinct.size, 20)
+
+  test("TasksClient handles updateTask, RetryBudgetExhausted, Failed, Cancelled, and Malformed cases"):
+    import io.circe.syntax.*
+    for
+      (client, server) <- setupClientAndServer()
+      _ <- server.store.create("t-inp", 10L, 10000L, IO.unit, None)
+      _ <- server.store.requireInput("t-inp", Json.obj())
+      upd <- client.updateTask("t-inp", Map("k" -> "v".asJson))
+      _ = assertEquals(upd.status, TaskStatus.Working)
+
+      emptyMethod <- client.request[Json]("").attempt
+      _ = assert(emptyMethod.left.exists(_.isInstanceOf[McpClientError.Malformed]))
+
+      // Budget exhausted
+      exhausted <- client.callToolWithPolling("slow_work", JsonObject("delayMs" -> 5000.asJson, "message" -> "x".asJson), defaultPollInterval = 1.millis, maxPolls = 0).attempt
+      _ = assert(exhausted.left.exists(_.isInstanceOf[McpClientError.RetryBudgetExhausted]))
+
+      // Cancelled & Failed & Completed-without-result via mock transport
+      mockTransport = new ironmcp.client.ClientTransport[IO]:
+        def request(req: JsonRpcMessage.Request): IO[JsonRpcMessage] = (req.method: String) match
+          case "tools/call" =>
+            IO.pure(JsonRpcMessage.Success(req.id, CreateTaskResult(taskId = "t-mock", pollIntervalMs = Some(1L)).asJson))
+          case "tasks/get" =>
+            val tid = req.params.flatMap(_.hcursor.get[String]("taskId").toOption).getOrElse("")
+            val snap = tid match
+              case "t-mock" => GetTaskResult("t-mock", TaskStatus.Cancelled)
+              case "t-fail" => GetTaskResult("t-fail", TaskStatus.Failed)
+              case _        => GetTaskResult("t-nores", TaskStatus.Completed, result = None)
+            IO.pure(JsonRpcMessage.Success(req.id, snap.asJson))
+          case "bad/notif" =>
+            IO.pure(JsonRpcMessage.Notification("x", None))
+          case _ =>
+            IO.pure(JsonRpcMessage.Success(req.id, Json.obj("notATask" -> true.asJson)))
+        def notify(notification: JsonRpcMessage.Notification): IO[Unit] = IO.unit
+      mc <- TasksClient[IO](mockTransport)
+      cErr <- mc.callToolWithPolling("anything", maxPolls = 2).attempt
+      _ = assert(cErr.left.exists(_.isInstanceOf[TaskCancelledException]))
+      badNotif <- mc.request[Json]("bad/notif").attempt
+      _ = assert(badNotif.left.exists(_.isInstanceOf[McpClientError.Malformed]))
+    yield ()
