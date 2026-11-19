@@ -27,6 +27,11 @@ import ironmcp.tasks.TaskModels.*
   * with authorization, `s"${claims.iss} ${claims.sub}"`), and `tasks/get`,
   * `tasks/cancel` and `tasks/update` answer only that caller. Without an
   * owner, anyone holding an ID can read or cancel that task.
+  *
+  * `inputTools` run as tasks too, with a [[TaskContext]] through which they
+  * ask the caller mid-flight: the task goes `input_required`, and the
+  * `tasks/update` that answers resumes it where it stopped. List each one's
+  * `mcpTool` in the underlying server's `ToolSet` as well.
   */
 final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
     val underlying: ServerHandler[F],
@@ -36,8 +41,11 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
     val defaultPollIntervalMs: Long = 1000L,
     val defaultTtlMs: Long = 300000L,
     val owner: Option[String] = None,
-    val onUnhandled: Option[OnUnhandled[F]] = None
+    val onUnhandled: Option[OnUnhandled[F]] = None,
+    val inputTools: List[TaskTool[F]] = Nil
 ) extends ServerHandler[F]:
+
+  private val asking: Map[String, TaskTool[F]] = inputTools.map(t => t.name -> t).toMap
 
   private val hook: OnUnhandled[F] = onUnhandled.getOrElse(OnUnhandled.noop[F])
 
@@ -120,46 +128,56 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
     val toolName = req.params.flatMap(_.hcursor.get[String]("name").toOption).getOrElse("")
     val clientAcceptsTasks = hasTasksCapability(req.params)
 
-    if taskTools.contains(toolName) && clientAcceptsTasks then
-      for
-        bytes <- random.nextBytes(16)
-        taskId = "task-" + bytes.map(b => f"${b & 0xff}%02x").mkString
-        cancelGate <- Deferred[F, F[Unit]]
-        createRes  <- store.create(taskId, defaultPollIntervalMs, defaultTtlMs, cancelGate.get.flatten, owner)
-        fiber <- Concurrent[F].start {
-          underlying.handle(req).flatMap {
-            case Some(JsonRpcMessage.Success(_, resJson)) =>
-              resJson.as[CallToolResult] match
-                case Right(callResult) => store.complete(taskId, callResult)
-                case Left(_)           => store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "Tool output malformed"))
-            case Some(JsonRpcMessage.Failure(_, err)) =>
-              store.fail(taskId, err)
-            case _ =>
-              store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "Tool produced no result"))
-          }.handleErrorWith {
-            // As for a request: an McpException is the answer; anything else
-            // goes to the hook and reaches the client as -32603, no detail.
-            case McpException(rpc) => store.fail(taskId, rpc)
-            case err =>
-              hook(req, err).handleError(_ => ()) *>
-                store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "internal error"))
-          }
-        }
-        _ <- cancelGate.complete(fiber.cancel)
-      yield Some(JsonRpcMessage.Success(req.id, createRes.asJson))
+    val asks = asking.get(toolName).flatMap(tool => req.params.flatMap(_.as[CallToolParams].toOption).map((tool, _)))
+
+    if clientAcceptsTasks && (asks.nonEmpty || taskTools.contains(toolName)) then
+      inBackground(req, taskId =>
+        asks match
+          case Some((tool, params)) =>
+            TaskContext(taskId, store).flatMap(tool.run(params, _)).map(r => Some(JsonRpcMessage.Success(req.id, r.asJson)))
+          case None => underlying.handle(req)
+      )
     else
       // Plain synchronous execution for non-task tools or non-task clients
       underlying.handleEmitting(req, emit)
 
+  /** Starts `run` on a fiber as a new task, answering at once with its handle. */
+  private def inBackground(req: JsonRpcMessage.Request, run: String => F[Option[JsonRpcMessage]]): F[Option[JsonRpcMessage]] =
+    for
+      bytes <- random.nextBytes(16)
+      taskId = "task-" + bytes.map(b => f"${b & 0xff}%02x").mkString
+      cancelGate <- Deferred[F, F[Unit]]
+      createRes  <- store.create(taskId, defaultPollIntervalMs, defaultTtlMs, cancelGate.get.flatten, owner)
+      fiber <- Concurrent[F].start {
+        run(taskId).flatMap {
+          case Some(JsonRpcMessage.Success(_, resJson)) =>
+            resJson.as[CallToolResult] match
+              case Right(callResult) => store.complete(taskId, callResult)
+              case Left(_)           => store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "Tool output malformed"))
+          case Some(JsonRpcMessage.Failure(_, err)) =>
+            store.fail(taskId, err)
+          case _ =>
+            store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "Tool produced no result"))
+        }.handleErrorWith {
+          // As for a request: an McpException is the answer; anything else
+          // goes to the hook and reaches the client as -32603, no detail.
+          case McpException(rpc) => store.fail(taskId, rpc)
+          case err =>
+            hook(req, err).handleError(_ => ()) *>
+              store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "internal error"))
+        }
+      }
+      _ <- cancelGate.complete(fiber.cancel)
+    yield Some(JsonRpcMessage.Success(req.id, createRes.asJson))
+
   private def handleDiscover(req: JsonRpcMessage.Request): F[Option[JsonRpcMessage]] =
     underlying.handle(req).map {
       case Some(JsonRpcMessage.Success(id, json)) =>
-        // Inject io.modelcontextprotocol/tasks into server capabilities
-        val tasksExt = Json.obj(CapabilityName -> Json.obj())
-        val updated = json.hcursor.downField("capabilities").downField("extensions").withFocus {
-          case ex if ex.isObject => ex.deepMerge(tasksExt)
-          case _                 => tasksExt
-        }.top.getOrElse(json)
+        // Add io.modelcontextprotocol/tasks to the server's extensions, creating them if it declared none.
+        val updated = json.hcursor.downField("capabilities").withFocus(_.mapObject { capabilities =>
+          val extensions = capabilities("extensions").flatMap(_.asObject).getOrElse(JsonObject.empty)
+          capabilities.add("extensions", Json.fromJsonObject(extensions.add(CapabilityName, Json.obj())))
+        }).top.getOrElse(json)
         Some(JsonRpcMessage.Success(id, updated))
       case other => other
     }
@@ -181,6 +199,7 @@ object TaskServer:
       defaultPollIntervalMs: Long = 1000L,
       defaultTtlMs: Long = 300000L,
       owner: Option[String] = None,
-      onUnhandled: Option[OnUnhandled[F]] = None
+      onUnhandled: Option[OnUnhandled[F]] = None,
+      inputTools: List[TaskTool[F]] = Nil
   ): TaskServer[F] =
-    new TaskServer[F](underlying, store, random, taskTools, defaultPollIntervalMs, defaultTtlMs, owner, onUnhandled)
+    new TaskServer[F](underlying, store, random, taskTools, defaultPollIntervalMs, defaultTtlMs, owner, onUnhandled, inputTools)

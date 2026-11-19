@@ -60,7 +60,12 @@ object TaskModels:
   /** Snapshot returned by `tasks/get`.
     *
     * When status is `Completed`, the final `CallToolResult` is inlined in `result`
-    * (there is no separate `tasks/result` endpoint).
+    * (there is no separate `tasks/result` endpoint). When it is `InputRequired`,
+    * `inputRequests` holds what the task is waiting on, keyed as the answers go
+    * back in `tasks/update`'s `inputResponses`; each is an `InputRequest`
+    * (`elicitation/create`, `sampling/createMessage`, `roots/list`), as in an
+    * `input_required` tool result. `statusMessage` is the task's own word on
+    * where it is.
     */
   final case class GetTaskResult(
       taskId: String,
@@ -71,7 +76,8 @@ object TaskModels:
       lastUpdatedAt: Option[Long] = None,
       result: Option[CallToolResult] = None,
       error: Option[JsonRpcError] = None,
-      inputRequest: Option[Json] = None
+      inputRequests: Option[Map[String, Json]] = None,
+      statusMessage: Option[String] = None
   )
 
   object GetTaskResult:

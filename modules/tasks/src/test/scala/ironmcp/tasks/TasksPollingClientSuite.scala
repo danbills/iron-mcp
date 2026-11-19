@@ -153,7 +153,7 @@ class TasksPollingClientSuite extends CatsEffectSuite:
     for
       (client, server) <- setupClientAndServer()
       _ <- server.store.create("t-inp", 10L, 10000L, IO.unit, None)
-      _ <- server.store.requireInput("t-inp", Json.obj())
+      _ <- server.store.requireInput("t-inp", Map.empty)
       upd <- client.updateTask("t-inp", Map("k" -> "v".asJson))
       _ = assertEquals(upd.status, TaskStatus.Working)
 
@@ -189,8 +189,14 @@ class TasksPollingClientSuite extends CatsEffectSuite:
       // Update with default empty map, Failed/Completed-no-result polling, and malformed tool/request replies
       updDef <- mc.updateTask("t-mock").attempt
       _ = assert(updDef.isLeft)
-      badCall <- mc.callToolAsTask("anything").attempt
-      _ = assert(badCall.left.exists(_.isInstanceOf[McpClientError.Malformed]))
+      // A task handle with no taskId is malformed
+      malformedTransport = new ironmcp.client.ClientTransport[IO]:
+        def request(req: JsonRpcMessage.Request): IO[JsonRpcMessage] =
+          IO.pure(JsonRpcMessage.Success(req.id, Json.obj("resultType" -> "task".asJson)))
+        def notify(notification: JsonRpcMessage.Notification): IO[Unit] = IO.unit
+      bc <- TasksClient[IO](malformedTransport)
+      badCall <- bc.callToolAsTask("anything").attempt
+      _ = assert(badCall.left.exists(_.isInstanceOf[McpClientError.Malformed]), badCall)
       // Test Failed and Completed-without-result in pollUntilTerminal
       failTransport = new ironmcp.client.ClientTransport[IO]:
         def request(req: JsonRpcMessage.Request): IO[JsonRpcMessage] = (req.method: String) match

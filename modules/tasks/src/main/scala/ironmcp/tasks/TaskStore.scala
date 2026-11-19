@@ -1,7 +1,7 @@
 package ironmcp
 package tasks
 
-import cats.effect.{Ref, Temporal}
+import cats.effect.{Deferred, Ref, Temporal}
 import cats.syntax.all.*
 import io.circe.Json
 import ironmcp.protocol.{CallToolResult, JsonRpcError}
@@ -23,7 +23,20 @@ trait TaskStore[F[_]]:
   def create(taskId: String, pollIntervalMs: Long, ttlMs: Long, cancelHook: F[Unit], owner: Option[String]): F[CreateTaskResult]
   def complete(taskId: String, result: CallToolResult): F[Unit]
   def fail(taskId: String, error: JsonRpcError): F[Unit]
-  def requireInput(taskId: String, inputRequest: Json): F[Unit]
+
+  /** Marks a task `input_required` with what it asks, keyed as the answers
+    * will come back. Nothing waits for them: see [[awaitInput]] for that.
+    */
+  def requireInput(taskId: String, inputRequests: Map[String, Json]): F[Unit]
+
+  /** Marks a task `input_required` and waits for the `tasks/update` that
+    * answers it, which sets it `working` again. `None` when the task is gone
+    * or already over. Cancelling the task cancels the wait.
+    */
+  def awaitInput(taskId: String, inputRequests: Map[String, Json]): F[Option[Map[String, Json]]]
+
+  /** The task's `statusMessage`, while it is still running. */
+  def setStatusMessage(taskId: String, message: String): F[Unit]
 
 object TaskStore:
 
@@ -36,7 +49,9 @@ object TaskStore:
       lastUpdatedAt: Long,
       result: Option[CallToolResult] = None,
       error: Option[JsonRpcError] = None,
-      inputRequest: Option[Json] = None,
+      inputRequests: Option[Map[String, Json]] = None,
+      statusMessage: Option[String] = None,
+      waiting: Option[Deferred[F, Map[String, Json]]] = None,
       cancelHook: F[Unit],
       owner: Option[String] = None
   ):
@@ -56,7 +71,8 @@ object TaskStore:
         lastUpdatedAt = Some(lastUpdatedAt),
         result = result,
         error = error,
-        inputRequest = inputRequest
+        inputRequests = inputRequests,
+        statusMessage = statusMessage
       )
 
   /** Creates an in-memory task store suitable for single-node servers and testing. */
@@ -117,12 +133,34 @@ object TaskStore:
             }
           }
 
-        def requireInput(taskId: String, inputRequest: Json): F[Unit] =
+        def requireInput(taskId: String, inputRequests: Map[String, Json]): F[Unit] =
+          asking(taskId, inputRequests, None).void
+
+        def awaitInput(taskId: String, inputRequests: Map[String, Json]): F[Option[Map[String, Json]]] =
+          Deferred[F, Map[String, Json]].flatMap { answer =>
+            asking(taskId, inputRequests, Some(answer)).flatMap(asked =>
+              if asked then answer.get.map(Some(_)) else Temporal[F].pure(None)
+            )
+          }
+
+        /** Sets the task waiting on `inputRequests`; false when there is no running task to set. */
+        private def asking(taskId: String, inputRequests: Map[String, Json], waiting: Option[Deferred[F, Map[String, Json]]]): F[Boolean] =
+          nowSeconds.flatMap { now =>
+            tasksRef.modify { map =>
+              map.get(taskId) match
+                case Some(e) if !e.status.isTerminal =>
+                  val updated = e.copy(status = TaskStatus.InputRequired, inputRequests = Some(inputRequests), waiting = waiting, lastUpdatedAt = now)
+                  (map.updated(taskId, updated), true)
+                case _ => (map, false)
+            }
+          }
+
+        def setStatusMessage(taskId: String, message: String): F[Unit] =
           nowSeconds.flatMap { now =>
             tasksRef.update { map =>
               map.get(taskId) match
                 case Some(e) if !e.status.isTerminal =>
-                  map.updated(taskId, e.copy(status = TaskStatus.InputRequired, inputRequest = Some(inputRequest), lastUpdatedAt = now))
+                  map.updated(taskId, e.copy(statusMessage = Some(message), lastUpdatedAt = now))
                 case _ => map
             }
           }
@@ -145,18 +183,18 @@ object TaskStore:
           }
 
         def update(taskId: String, inputResponses: Map[String, Json], owner: Option[String]): F[Option[UpdateTaskResult]] =
-          val _ = inputResponses
           nowSeconds.flatMap { now =>
             tasksRef.modify { map =>
               map.get(taskId).filter(_.visibleTo(owner)) match
                 case Some(e) if e.status == TaskStatus.InputRequired =>
-                  // Transition back to Working as input was provided
-                  val updated = e.copy(status = TaskStatus.Working, inputRequest = None, lastUpdatedAt = now)
-                  (map.updated(taskId, updated), Some(UpdateTaskResult(taskId, TaskStatus.Working)))
+                  // Back to working, and the answers go to the task waiting on them.
+                  val updated = e.copy(status = TaskStatus.Working, inputRequests = None, waiting = None, lastUpdatedAt = now)
+                  val deliver = e.waiting.fold(Temporal[F].unit)(_.complete(inputResponses).void)
+                  (map.updated(taskId, updated), (deliver, Some(UpdateTaskResult(taskId, TaskStatus.Working))))
                 case Some(e) =>
-                  (map, Some(UpdateTaskResult(taskId, e.status)))
+                  (map, (Temporal[F].unit, Some(UpdateTaskResult(taskId, e.status))))
                 case None =>
-                  (map, None)
-            }
+                  (map, (Temporal[F].unit, None))
+            }.flatMap((deliver, result) => deliver.as(result))
           }
     }

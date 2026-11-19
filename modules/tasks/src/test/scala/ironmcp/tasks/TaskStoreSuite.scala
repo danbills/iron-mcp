@@ -82,7 +82,7 @@ class TaskStoreSuite extends CatsEffectSuite:
     for
       store <- TaskStore.inMemory[IO](defaultPollIntervalMs = 250L, defaultTtlMs = 1L)
       c0    <- store.create("t-def", pollIntervalMs = 0L, ttlMs = 0L, cancelHook = IO.unit, owner = None)
-      _     <- store.requireInput("t-def", Json.obj("prompt" -> "name?".asJson))
+      _     <- store.requireInput("t-def", Map("name" -> Json.obj("prompt" -> "name?".asJson)))
       g1    <- store.get("t-def", None)
       u1    <- store.update("t-def", Map("name" -> "ada".asJson), None)
       u2    <- store.update("t-def", Map.empty, None)
@@ -90,7 +90,7 @@ class TaskStoreSuite extends CatsEffectSuite:
       // Terminal no-ops
       _     <- store.complete("t-def", CallToolResult(Nil))
       _     <- store.fail("t-def", JsonRpcError(ErrorCode.InternalError, "again"))
-      _     <- store.requireInput("t-def", Json.Null)
+      _     <- store.requireInput("t-def", Map.empty)
       cTerm <- store.cancel("t-def", None)
       cMiss <- store.cancel("missing", None)
       uMiss <- store.update("missing", Map.empty, None)

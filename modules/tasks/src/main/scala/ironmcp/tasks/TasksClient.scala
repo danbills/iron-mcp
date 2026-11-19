@@ -9,7 +9,7 @@ import io.circe.syntax.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.autoRefine
 import io.github.iltotore.iron.constraint.all.*
-import ironmcp.client.{ClientTransport, McpClient, McpClientError}
+import ironmcp.client.{ClientTransport, InputHandlers, McpClient, McpClientError}
 import ironmcp.protocol.*
 import ironmcp.tasks.TaskModels.*
 
@@ -26,7 +26,10 @@ final case class TaskCancelledException(taskId: String)
   * 3. `cancelTask`: requests cooperative task cancellation.
   * 4. `updateTask`: supplies mid-flight input responses.
   * 5. `callToolWithPolling`: the transparent path (§7.3), declaring the extension and
-  *    polling any background task handle to completion internally.
+  *    polling any background task handle to completion internally, answering a task
+  *    that goes `input_required` with the client's [[InputHandlers]] (`tasks/update`).
+  *
+  * The handlers declare their capabilities beside the extension, as on [[McpClient]].
   */
 final class TasksClient[F[_]: {Temporal, MonadThrow}] (
     val client: McpClient[F],
@@ -36,8 +39,8 @@ final class TasksClient[F[_]: {Temporal, MonadThrow}] (
 ):
 
   private val tasksCapabilities: ClientCapabilities =
-    ClientCapabilities(
-      extensions = Some(Map(CapabilityName -> JsonObject.empty))
+    client.capabilities.copy(
+      extensions = Some(client.capabilities.extensions.getOrElse(Map.empty) + (CapabilityName -> JsonObject.empty))
     )
 
   private val metaJson: Json =
@@ -127,9 +130,16 @@ final class TasksClient[F[_]: {Temporal, MonadThrow}] (
     else
       Temporal[F].sleep(interval) *> getTask(taskId).flatMap { snapshot =>
         snapshot.status match
-          case TaskStatus.Working | TaskStatus.InputRequired =>
+          case TaskStatus.Working =>
             val nextInterval = snapshot.pollIntervalMs.map(ms => ms.millis).getOrElse(interval)
             pollUntilTerminal(taskId, nextInterval, pollsLeft - 1)
+          case TaskStatus.InputRequired =>
+            // Answered with this client's handlers; a request none can answer fails the call.
+            val nextInterval = snapshot.pollIntervalMs.map(ms => ms.millis).getOrElse(interval)
+            snapshot.inputRequests.getOrElse(Map.empty).toList
+              .traverse((key, request) => client.answer(key, request).map(key -> _))
+              .flatMap(answers => updateTask(taskId, answers.toMap))
+              .flatMap(_ => pollUntilTerminal(taskId, nextInterval, pollsLeft - 1))
           case TaskStatus.Completed =>
             snapshot.result match
               case Some(callResult) => MonadThrow[F].pure(callResult)
@@ -148,9 +158,10 @@ object TasksClient:
 
   def apply[F[_]: {Temporal, MonadThrow}](
       transport: ClientTransport[F],
-      info: Implementation = Implementation(name = "iron-mcp-tasks-client", version = "1.0.0")
+      info: Implementation = Implementation(name = "iron-mcp-tasks-client", version = "1.0.0"),
+      handlers: InputHandlers[F] = InputHandlers.none[F]
   ): F[TasksClient[F]] =
     for
-      client <- McpClient[F](transport, info)
+      client <- McpClient[F](transport, info, handlers)
       ids <- Ref.of[F, Long](0L)
     yield new TasksClient[F](client, transport, info, ids)

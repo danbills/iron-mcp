@@ -149,7 +149,51 @@ println(s"Cancelled task: ${cancelRes.taskId}, status: ${finalSnapshot.status}")
 
 ---
 
-## 5. Protocol Wire Messages Reference
+## 5. Asking the Caller Mid-Flight (`TaskTool`)
+
+A plain tool that needs input answers `tools/call` with `input_required` and runs again from the start when the client retries with the answers. A tool running as a task can do better: it asks through its `TaskContext`, the task goes `input_required` with the requests in its `tasks/get` snapshot (`inputRequests`), and the client's `tasks/update` with `inputResponses` resumes it where it stopped, with the work it had done kept.
+
+```scala mdoc
+final case class Order(item: String) derives Decoder, JsonSchemaOf
+final case class Confirm(confirm: Boolean) derives Decoder, JsonSchemaOf
+
+val checkout = TaskTool[IO, Order]("checkout", "Reserves an item, asks, then buys it.") { (order, task) =>
+  for {
+    _      <- task.status(s"reserved ${order.item}")
+    answer <- task.ask(Map("confirm" -> Elicit.form[Confirm](s"Buy ${order.item}?")))
+    yes     = answer.get("confirm").flatMap(_.hcursor.downField("content").get[Boolean]("confirm").toOption).contains(true)
+  } yield if (yes) s"bought ${order.item}" else s"released ${order.item}"
+}
+
+val shop: IO[TaskServer[IO]] = for {
+  random <- SecureRandom.javaSecuritySecureRandom[IO]
+  store  <- TaskStore.inMemory[IO](defaultPollIntervalMs = 10L)
+  base    = McpServer[IO](Implementation("shop", "1.0.0"), tools = Some(ToolSet.of(checkout.mcpTool)))
+} yield TaskServer[IO](base, store, random, inputTools = List(checkout))
+```
+
+`checkout.mcpTool` is how the tool is listed, and how it runs for a client that does not declare the extension: there, asking is a tool error, since a request has no way to wait. `TasksClient` answers `input_required` with its `InputHandlers`, as `McpClient.callToolGathering` does for a tool result:
+
+```scala mdoc
+import ironmcp.client.InputHandlers
+
+val bought: CallToolResult = (for {
+  server <- shop
+  client <- TasksClient[IO](
+              ClientTransport.inProcess[IO](server),
+              handlers = InputHandlers.elicitation[IO](_ =>
+                IO.pure(ElicitResult(ElicitAction.Accept, Some(JsonObject("confirm" -> true.asJson))))
+              )
+            )
+  res <- client.callToolWithPolling("checkout", JsonObject("item" -> "lamp".asJson), defaultPollInterval = 10.millis)
+} yield res).unsafeRunSync()
+
+println(bought.content.headOption)
+```
+
+---
+
+## 6. Protocol Wire Messages Reference
 
 ### `tools/call` Response (Task Created)
 ```json
@@ -186,6 +230,38 @@ println(s"Cancelled task: ${cancelRes.taskId}, status: ${finalSnapshot.status}")
       ],
       "isError": false
     }
+  }
+}
+```
+
+### `tasks/get` Response (Input Required)
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "taskId": "task-5b0c2f9e",
+    "status": "input_required",
+    "statusMessage": "reserved lamp",
+    "inputRequests": {
+      "confirm": {
+        "method": "elicitation/create",
+        "params": { "mode": "form", "message": "Buy lamp?", "requestedSchema": { "type": "object", "properties": { "confirm": { "type": "boolean" } }, "required": ["confirm"] } }
+      }
+    }
+  }
+}
+```
+
+### `tasks/update` Request
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "tasks/update",
+  "params": {
+    "taskId": "task-5b0c2f9e",
+    "inputResponses": { "confirm": { "action": "accept", "content": { "confirm": true } } }
   }
 }
 ```

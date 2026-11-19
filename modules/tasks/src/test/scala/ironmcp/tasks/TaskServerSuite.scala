@@ -239,7 +239,7 @@ class TaskServerSuite extends CatsEffectSuite:
       badUpdate <- server.handle(JsonRpcMessage.Request(RequestId.Num(4), "tasks/update", Some(Json.obj())))
       missUpdate<- server.handle(JsonRpcMessage.Request(RequestId.Num(5), "tasks/update", Some(Json.obj("taskId" -> "nope".asJson, "inputResponses" -> Json.obj()))))
       _         <- store.create("t-upd", 50L, 10000L, IO.unit, None)
-      _         <- store.requireInput("t-upd", Json.obj())
+      _         <- store.requireInput("t-upd", Map.empty)
       okUpdate  <- server.handle(JsonRpcMessage.Request(RequestId.Num(6), "tasks/update", Some(Json.obj("taskId" -> "t-upd".asJson, "inputResponses" -> Json.obj()))))
       disc      <- server.handleRecovering(JsonRpcMessage.Request(RequestId.Num(7), "initialize", None))
       notif     <- server.handle(JsonRpcMessage.Notification("notifications/cancelled", None))
@@ -274,7 +274,7 @@ class TaskServerSuite extends CatsEffectSuite:
       random <- SecureRandom.javaSecuritySecureRandom[IO]
       store  <- TaskStore.inMemory[IO]()
       srv    = TaskServer[IO](minimal, store, random)
-      d1     <- srv.handle(JsonRpcMessage.Request(RequestId.Num(1), Method.Discover.wire, None))
+      d1     <- srv.handle(JsonRpcMessage.Request(RequestId.Num(1), "server/discover", None))
       d2     <- srv.handleRecovering(JsonRpcMessage.Request(RequestId.Num(2), "ping", None))
     yield
       assert(d1.get.asInstanceOf[JsonRpcMessage.Success].result.hcursor.downField("capabilities").downField("extensions").downField(CapabilityName).succeeded)
