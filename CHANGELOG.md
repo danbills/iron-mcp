@@ -2,7 +2,7 @@
 
 All notable changes to iron-mcp. Versions follow [Semantic Versioning](https://semver.org); before 1.0, a minor version may break the API, and such changes are listed under **Breaking**. Artifacts are on Maven Central as `io.github.danbills:iron-mcp-*`.
 
-## [Unreleased]
+## [0.11.0] — 2026-11-19
 
 ### Breaking
 - **`iron-mcp-tasks`**: `TaskStore` is event-sourced. Every change is a `TaskEvent` applied to an immutable `TaskState`. The trait gains `attach`, `setRetention`, `checkpoint`, `recordCheckpoint` and `unfinished`, and `create` takes the `call` to keep. `TaskContext` gains `step` and `retain`. `TaskTool` has a third field, `resumable`; `TaskTool(mcpTool, run)` still builds one that is not resumable.
@@ -141,7 +141,8 @@ Both `ext-auth` extensions (OAuth Client Credentials, Enterprise-Managed Authori
 
 First release: the MCP 2026-07-28 protocol on a cross-platform Scala 3 core (JVM and Scala Native), with JSON Schema derived at compile time from Iron constraints, and the stdio transport.
 
-[Unreleased]: https://github.com/danbills/iron-mcp/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/danbills/iron-mcp/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/danbills/iron-mcp/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/danbills/iron-mcp/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/danbills/iron-mcp/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/danbills/iron-mcp/compare/v0.8.0...v0.8.1
