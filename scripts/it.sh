@@ -14,14 +14,17 @@ cd "$root"
 which="${1:-all}"
 command -v bun >/dev/null || { echo "scripts/it.sh needs bun (https://bun.sh)" >&2; exit 1; }
 
-native="$root/target/out/native0.5/scala-3.9.0/iron-mcp-fixture/iron-mcp-fixture"
+# The binary's directory names the Scala version, which build.sbt sets once.
+scala_version="$(sed -n 's/^val scala3Version *= *"\(.*\)"/\1/p' build.sbt)"
+[ -n "$scala_version" ] || { echo "could not read scala3Version from build.sbt" >&2; exit 1; }
+native="$root/target/out/native0.5/scala-$scala_version/iron-mcp-fixture/iron-mcp-fixture"
 jvm="$root/target/it/fixture-jvm"
 
 # sbt 2 prints virtual paths: ${OUT} is target/out, ${CSR_CACHE} the coursier cache, and jars carry a >sha256-...
-# suffix (AGENTS.md, "sbt 2 Behavior That Bites").
+# suffix (AGENTS.md, "sbt 2 Behavior That Bites"). sbt 2.1's `export` prints nothing, so this reads `show`'s
+# `[info] * Attributed(<path>)` lines.
 jvm_classpath() {
-  sbt -batch -no-colors "export fixtureJVM/Runtime/fullClasspath" 2>&1 | grep '^List(' | tail -1 \
-    | sed -e 's/^List(//' -e 's/)[^)]*$//' | tr -d ' ' | tr ',' '\n' \
+  sbt -batch -no-colors "show fixtureJVM/Runtime/fullClasspath" 2>&1 | sed -n 's/^\[info\] \* Attributed(\(.*\))$/\1/p' \
     | sed -e "s#\${OUT}#$root/target/out#" -e "s#\${CSR_CACHE}#$HOME/.cache/coursier/v1#" -e "s#\${IVY_HOME}#$HOME/.ivy2#" -e 's#>.*$##' \
     | paste -sd:
 }
