@@ -2,6 +2,21 @@
 
 All notable changes to iron-mcp. Versions follow [Semantic Versioning](https://semver.org); before 1.0, a minor version may break the API, and such changes are listed under **Breaking**. Artifacts are on Maven Central as `io.github.danbills:iron-mcp-*`.
 
+## [0.10.0] — 2026-11-19
+
+### Breaking
+- **`iron-mcp-tasks`**: `GetTaskResult.inputRequest: Option[Json]` is now `inputRequests: Option[Map[String, Json]]`, keyed as the answers come back in `tasks/update`, as the Tasks extension has it. `TaskStore.requireInput` takes that map, and `TaskStore` gains `awaitInput` and `setStatusMessage`. `TaskServer` takes one more constructor argument (`inputTools`).
+
+### Added
+- **`TaskTool`** and **`TaskContext`** (`iron-mcp-tasks`): a tool running as a task asks its caller mid-flight (`task.ask`), the task goes `input_required` with the requests in its snapshot, and the client's `tasks/update` resumes it where it stopped, with nothing redone. `task.status` sets the snapshot's `statusMessage`. Give the tools to `TaskServer(inputTools = ...)`; for a client without the extension, asking is a tool error.
+- **`TasksClient`** answers a task's `input_required` with its `InputHandlers` (new `handlers` argument) while polling, and declares their capabilities beside the extension.
+
+### Fixed
+- **`TaskStore.update`** dropped the `inputResponses` it was given; they now reach the task waiting on them.
+- **`TaskServer`** added `io.modelcontextprotocol/tasks` to `server/discover` only when the server already declared an `extensions` object; a server with none never advertised the extension.
+- The `tasks` test suites did not compile since 0.9.0 (an Iron literal check on `Method.Discover.wire`), so they had not run.
+- `scripts/it.sh` failed on sbt 2.1 and Scala 3.10.1: it read the fixture's classpath with `export`, which sbt 2.1 no longer prints, and looked for the native fixture under `scala-3.9.0`. It reads `show` and takes the Scala version from `build.sbt`.
+
 ## [0.9.0] — 2026-11-18
 
 ### Added
@@ -107,7 +122,9 @@ Both `ext-auth` extensions (OAuth Client Credentials, Enterprise-Managed Authori
 
 First release: the MCP 2026-07-28 protocol on a cross-platform Scala 3 core (JVM and Scala Native), with JSON Schema derived at compile time from Iron constraints, and the stdio transport.
 
-[Unreleased]: https://github.com/danbills/iron-mcp/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/danbills/iron-mcp/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/danbills/iron-mcp/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/danbills/iron-mcp/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/danbills/iron-mcp/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/danbills/iron-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/danbills/iron-mcp/compare/v0.6.0...v0.7.0
