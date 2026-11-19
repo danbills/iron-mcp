@@ -2,6 +2,25 @@
 
 All notable changes to iron-mcp. Versions follow [Semantic Versioning](https://semver.org); before 1.0, a minor version may break the API, and such changes are listed under **Breaking**. Artifacts are on Maven Central as `io.github.danbills:iron-mcp-*`.
 
+## [Unreleased]
+
+### Breaking
+- **`iron-mcp-tasks`**: `TaskStore` is event-sourced. Every change is a `TaskEvent` applied to an immutable `TaskState`. The trait gains `attach`, `setRetention`, `checkpoint`, `recordCheckpoint` and `unfinished`, and `create` takes the `call` to keep. `TaskContext` gains `step` and `retain`. `TaskTool` has a third field, `resumable`; `TaskTool(mcpTool, run)` still builds one that is not resumable.
+
+### Added
+- **`TaskStore.journaled`** and **`FileTaskJournal`** (JVM): tasks that outlive the process, in the manner of the LMAX architecture.
+  - The state lives in memory, and one fiber applies changes in order.
+  - Each batch's events are written to JSON-lines segments with one sync before anyone is answered.
+  - Snapshots are taken every `snapshotEvery` events and on shutdown; opening replays from the latest one.
+  - A last line cut short by a crash is dropped, and any other damage fails the open.
+  - The files are owner-only.
+  - If the journal fails, the store stops taking changes (`TaskJournalFailed`).
+  - Retention is required: `journaled` takes a `defaultTtlMs` with no default, and no task is kept forever.
+- **`TaskServer.recover`**: after a restart, a resumable `TaskTool`'s task runs again with the call that started it, and the steps it finished (`TaskContext.step`) return their recorded results. Any other unfinished task fails, saying the server restarted.
+- **`TaskContext.step(key)(fa)`** runs one whole step once and records its result.
+- **`TaskContext.retain(ttl)`** sets how long the task is kept once it finishes (`ttlMs`). It must be positive.
+- Answers that a `tasks/update` brings while nothing waits for them are kept until the task asks the same question again. Before, they were dropped.
+
 ## [0.10.0] — 2026-11-19
 
 ### Breaking

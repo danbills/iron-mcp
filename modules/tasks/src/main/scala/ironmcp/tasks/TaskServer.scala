@@ -131,44 +131,79 @@ final class TaskServer[F[_]: {Temporal, ApplicativeThrow}] (
     val asks = asking.get(toolName).flatMap(tool => req.params.flatMap(_.as[CallToolParams].toOption).map((tool, _)))
 
     if clientAcceptsTasks && (asks.nonEmpty || taskTools.contains(toolName)) then
-      inBackground(req, taskId =>
+      // A resumable tool's call is kept, to run it again after a restart; nothing else is.
+      val kept = asks.collect { case (tool, params) if tool.resumable => params.copy(requestState = None, inputResponses = None) }
+      inBackground(req, kept, taskId =>
         asks match
-          case Some((tool, params)) =>
-            TaskContext(taskId, store).flatMap(tool.run(params, _)).map(r => Some(JsonRpcMessage.Success(req.id, r.asJson)))
-          case None => underlying.handle(req)
+          case Some((tool, params)) => runAsking(req.id, tool, params, taskId)
+          case None                 => underlying.handle(req)
       )
     else
       // Plain synchronous execution for non-task tools or non-task clients
       underlying.handleEmitting(req, emit)
 
+  private def runAsking(id: RequestId, tool: TaskTool[F], params: CallToolParams, taskId: String): F[Option[JsonRpcMessage]] =
+    TaskContext(taskId, store).flatMap(tool.run(params, _)).map(r => Some(JsonRpcMessage.Success(id, r.asJson)))
+
   /** Starts `run` on a fiber as a new task, answering at once with its handle. */
-  private def inBackground(req: JsonRpcMessage.Request, run: String => F[Option[JsonRpcMessage]]): F[Option[JsonRpcMessage]] =
+  private def inBackground(
+      req: JsonRpcMessage.Request,
+      call: Option[CallToolParams],
+      run: String => F[Option[JsonRpcMessage]]
+  ): F[Option[JsonRpcMessage]] =
     for
       bytes <- random.nextBytes(16)
       taskId = "task-" + bytes.map(b => f"${b & 0xff}%02x").mkString
       cancelGate <- Deferred[F, F[Unit]]
-      createRes  <- store.create(taskId, defaultPollIntervalMs, defaultTtlMs, cancelGate.get.flatten, owner)
-      fiber <- Concurrent[F].start {
-        run(taskId).flatMap {
-          case Some(JsonRpcMessage.Success(_, resJson)) =>
-            resJson.as[CallToolResult] match
-              case Right(callResult) => store.complete(taskId, callResult)
-              case Left(_)           => store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "Tool output malformed"))
-          case Some(JsonRpcMessage.Failure(_, err)) =>
-            store.fail(taskId, err)
-          case _ =>
-            store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "Tool produced no result"))
-        }.handleErrorWith {
-          // As for a request: an McpException is the answer; anything else
-          // goes to the hook and reaches the client as -32603, no detail.
-          case McpException(rpc) => store.fail(taskId, rpc)
-          case err =>
-            hook(req, err).handleError(_ => ()) *>
-              store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "internal error"))
-        }
-      }
-      _ <- cancelGate.complete(fiber.cancel)
+      createRes  <- store.create(taskId, defaultPollIntervalMs, defaultTtlMs, cancelGate.get.flatten, owner, call)
+      _          <- supervise(req, taskId, run(taskId), cancelGate)
     yield Some(JsonRpcMessage.Success(req.id, createRes.asJson))
+
+  /** Runs a task's work on a fiber, recording how it ends, and opens `cancelGate` onto that fiber. */
+  private def supervise(
+      req: JsonRpcMessage,
+      taskId: String,
+      work: F[Option[JsonRpcMessage]],
+      cancelGate: Deferred[F, F[Unit]]
+  ): F[Unit] =
+    Concurrent[F].start {
+      work.flatMap {
+        case Some(JsonRpcMessage.Success(_, resJson)) =>
+          resJson.as[CallToolResult] match
+            case Right(callResult) => store.complete(taskId, callResult)
+            case Left(_)           => store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "Tool output malformed"))
+        case Some(JsonRpcMessage.Failure(_, err)) =>
+          store.fail(taskId, err)
+        case _ =>
+          store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "Tool produced no result"))
+      }.handleErrorWith {
+        // As for a request: an McpException is the answer; anything else
+        // goes to the hook and reaches the client as -32603, no detail.
+        case McpException(rpc) => store.fail(taskId, rpc)
+        case err =>
+          hook(req, err).handleError(_ => ()) *>
+            store.fail(taskId, JsonRpcError(ErrorCode.InternalError, "internal error"))
+      }
+    }.flatMap(fiber => cancelGate.complete(fiber.cancel).void)
+
+  /** After a restart over a journaled store ([[TaskStore.journaled]]), every
+    * task the store holds unfinished has no fiber. A resumable [[TaskTool]]'s
+    * task runs again with the call that started it, its finished steps
+    * returning their recorded results; any other fails, saying the server
+    * restarted. Call it once, before serving.
+    */
+  def recover: F[Unit] =
+    store.unfinished.flatMap(_.traverse_ { task =>
+      task.call.flatMap(call => asking.get(call.name).filter(_.resumable).map((call, _))) match
+        case Some((call, tool)) =>
+          val req = JsonRpcMessage.Request(RequestId.Text(s"recover-${task.taskId}".assume[Not[Empty]]), "tools/call", Some(call.asJson))
+          Deferred[F, F[Unit]].flatMap { cancelGate =>
+            store.attach(task.taskId, cancelGate.get.flatten) *>
+              supervise(req, task.taskId, runAsking(RequestId.Text(s"recover-${task.taskId}".assume[Not[Empty]]), tool, call, task.taskId), cancelGate)
+          }
+        case None =>
+          store.fail(task.taskId, JsonRpcError(ErrorCode.InternalError, "the server restarted while this task ran"))
+    })
 
   private def handleDiscover(req: JsonRpcMessage.Request): F[Option[JsonRpcMessage]] =
     underlying.handle(req).map {

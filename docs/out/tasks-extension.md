@@ -70,7 +70,7 @@ val simulationTool = McpTool[SimulationArgs]("run_simulation", "Runs Monte Carlo
 //     icons = None,
 //     _meta = None
 //   ),
-//   invoke = ironmcp.server.McpTool$Builder$$Lambda/0x0000000064997708@59acdcf,
+//   invoke = ironmcp.server.McpTool$Builder$$Lambda/0x000000006399d148@51b6154c,
 //   emitting = None
 // )
 
@@ -95,7 +95,7 @@ val fastEchoTool = McpTool[SimulationArgs]("quick_ping", "Instant response") { a
 //     icons = None,
 //     _meta = None
 //   ),
-//   invoke = ironmcp.server.McpTool$Builder$$Lambda/0x0000000064997708@21af582a,
+//   invoke = ironmcp.server.McpTool$Builder$$Lambda/0x000000006399d148@303b2bf9,
 //   emitting = None
 // )
 ```
@@ -122,15 +122,15 @@ val serverIO: IO[TaskServer[IO]] = for {
 } yield taskServer
 // serverIO: IO[TaskServer[[A >: Nothing <: Any] =>> IO[A]]] = FlatMap(
 //   ioe = Delay(
-//     thunk = cats.effect.std.SecureRandom$$$Lambda/0x0000000064a29be0@7b51d80d,
+//     thunk = cats.effect.std.SecureRandom$$$Lambda/0x0000000063a34410@3b7d82e1,
 //     event = cats.effect.tracing.TracingEvent$StackTrace
 //   ),
-//   f = repl.MdocSession$MdocApp$$Lambda/0x00000000649ed458@3645f7e0,
+//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000063a32828@6c000ac6,
 //   event = cats.effect.tracing.TracingEvent$StackTrace
 // )
 
 val taskServer = serverIO.unsafeRunSync()
-// taskServer: TaskServer[[A >: Nothing <: Any] =>> IO[A]] = ironmcp.tasks.TaskServer@2bae6aa6
+// taskServer: TaskServer[[A >: Nothing <: Any] =>> IO[A]] = ironmcp.tasks.TaskServer@57752698
 ```
 
 ---
@@ -156,16 +156,16 @@ val transparentRun: IO[CallToolResult] = for {
 //   ioe = FlatMap(
 //     ioe = Map(
 //       ioe = Delay(
-//         thunk = cats.effect.IO$$$Lambda/0x0000000064aa39b8@28e7e641,
+//         thunk = cats.effect.IO$$$Lambda/0x0000000063a91960@5354e3a0,
 //         event = cats.effect.tracing.TracingEvent$StackTrace
 //       ),
-//       f = ironmcp.client.McpClient$$$Lambda/0x0000000064aaa3c0@2eab65a2,
+//       f = ironmcp.client.McpClient$$$Lambda/0x0000000063a9baa0@76d477da,
 //       event = cats.effect.tracing.TracingEvent$StackTrace
 //     ),
-//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000064aaaa00@5b4f51ca,
+//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000063a9be78@2169996b,
 //     event = cats.effect.tracing.TracingEvent$StackTrace
 //   ),
-//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000064aac228@422c47b4,
+//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000063a96600@4dd3e1ba,
 //   event = cats.effect.tracing.TracingEvent$StackTrace
 // )
 
@@ -201,16 +201,16 @@ val fastRun: IO[CallToolResult] = for {
 //   ioe = FlatMap(
 //     ioe = Map(
 //       ioe = Delay(
-//         thunk = cats.effect.IO$$$Lambda/0x0000000064aa39b8@726e363,
+//         thunk = cats.effect.IO$$$Lambda/0x0000000063a91960@18a5a5f0,
 //         event = cats.effect.tracing.TracingEvent$StackTrace
 //       ),
-//       f = ironmcp.client.McpClient$$$Lambda/0x0000000064aaa3c0@4b1eaa1e,
+//       f = ironmcp.client.McpClient$$$Lambda/0x0000000063a9baa0@78d43777,
 //       event = cats.effect.tracing.TracingEvent$StackTrace
 //     ),
-//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000064aaaa00@20c738a8,
+//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000063a9be78@e8d69a0,
 //     event = cats.effect.tracing.TracingEvent$StackTrace
 //   ),
-//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000064aad050@64b3a31f,
+//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000063a97428@4d10f7bb,
 //   event = cats.effect.tracing.TracingEvent$StackTrace
 // )
 
@@ -253,38 +253,38 @@ val cancelRun: IO[(CancelTaskResult, GetTaskResult)] = for {
 //   ioe = FlatMap(
 //     ioe = Map(
 //       ioe = Delay(
-//         thunk = cats.effect.IO$$$Lambda/0x0000000064aa39b8@54be6911,
+//         thunk = cats.effect.IO$$$Lambda/0x0000000063a91960@782f51cc,
 //         event = cats.effect.tracing.TracingEvent$StackTrace
 //       ),
-//       f = ironmcp.client.McpClient$$$Lambda/0x0000000064aaa3c0@6ace77c2,
+//       f = ironmcp.client.McpClient$$$Lambda/0x0000000063a9baa0@2119ae31,
 //       event = cats.effect.tracing.TracingEvent$StackTrace
 //     ),
-//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000064aaaa00@7355004b,
+//     f = ironmcp.tasks.TasksClient$$$Lambda/0x0000000063a9be78@44bc13db,
 //     event = cats.effect.tracing.TracingEvent$StackTrace
 //   ),
-//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000064aadaa0@a07ee65,
+//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000063b00000@edb89d8,
 //   event = cats.effect.tracing.TracingEvent$StackTrace
 // )
 
 val (cancelRes, finalSnapshot) = cancelRun.unsafeRunSync()
 // cancelRes: CancelTaskResult = CancelTaskResult(
-//   taskId = "task-22a723fb218f572bb578d5f5313bcf95",
+//   taskId = "task-3e28da85c29b0066a0c1148530922302",
 //   status = Cancelled
 // )
 // finalSnapshot: GetTaskResult = GetTaskResult(
-//   taskId = "task-22a723fb218f572bb578d5f5313bcf95",
+//   taskId = "task-3e28da85c29b0066a0c1148530922302",
 //   status = Cancelled,
 //   pollIntervalMs = Some(50L),
 //   ttlMs = Some(300000L),
-//   createdAt = Some(1795103063L),
-//   lastUpdatedAt = Some(1795103063L),
+//   createdAt = Some(1795107420L),
+//   lastUpdatedAt = Some(1795107420L),
 //   result = None,
 //   error = None,
 //   inputRequests = None,
 //   statusMessage = None
 // )
 println(s"Cancelled task: ${cancelRes.taskId}, status: ${finalSnapshot.status}")
-// Cancelled task: task-22a723fb218f572bb578d5f5313bcf95, status: Cancelled
+// Cancelled task: task-3e28da85c29b0066a0c1148530922302, status: Cancelled
 ```
 
 ---
@@ -320,10 +320,11 @@ val checkout = TaskTool[IO, Order]("checkout", "Reserves an item, asks, then buy
 //       icons = None,
 //       _meta = None
 //     ),
-//     invoke = ironmcp.server.McpTool$Builder$$Lambda/0x0000000064997708@60fb398e,
+//     invoke = ironmcp.server.McpTool$Builder$$Lambda/0x000000006399d148@330cfb84,
 //     emitting = None
 //   ),
-//   run = ironmcp.tasks.TaskTool$Builder$$Lambda/0x0000000064b11248@270f519f
+//   run = ironmcp.tasks.TaskTool$Builder$$Lambda/0x0000000063b0d3b8@729bdcc4,
+//   resumable = false
 // )
 
 val shop: IO[TaskServer[IO]] = for {
@@ -333,10 +334,10 @@ val shop: IO[TaskServer[IO]] = for {
 } yield TaskServer[IO](base, store, random, inputTools = List(checkout))
 // shop: IO[TaskServer[[A >: Nothing <: Any] =>> IO[A]]] = FlatMap(
 //   ioe = Delay(
-//     thunk = cats.effect.std.SecureRandom$$$Lambda/0x0000000064a29be0@2d56f8d5,
+//     thunk = cats.effect.std.SecureRandom$$$Lambda/0x0000000063a34410@cf818fe,
 //     event = cats.effect.tracing.TracingEvent$StackTrace
 //   ),
-//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000064b15b88@343ffada,
+//   f = repl.MdocSession$MdocApp$$Lambda/0x0000000063b10000@60fc4776,
 //   event = cats.effect.tracing.TracingEvent$StackTrace
 // )
 ```
@@ -370,7 +371,125 @@ println(bought.content.headOption)
 
 ---
 
-## 6. Protocol Wire Messages Reference
+## 6. Durable Tasks (`TaskStore.journaled`)
+
+`TaskStore.inMemory` loses every task when the process stops. `TaskStore.journaled` keeps them, in the manner of the LMAX architecture: the state lives in memory, every change is an event, and the events go to disk before anyone is answered.
+
+- **One writer.** A single fiber takes changes in order, decides each against the state in memory, and writes the batch's events with one write and one sync. Only then is the new state visible and the callers answered. Reads come from memory.
+- **Events and snapshots.** `FileTaskJournal` appends events to JSON-lines segments, and snapshots the whole state every `snapshotEvery` events and on a clean shutdown. Opening loads the latest snapshot and replays the events after it. A last line cut short by a crash is dropped, because its batch was never answered. Damage anywhere else fails the open rather than losing tasks quietly. The files are owner-only, since they hold tool arguments and results.
+- **Fail-stop.** If the journal cannot write, the store takes no more changes (`TaskJournalFailed`), so memory and disk never part ways.
+
+A process can't write down its fibers, so a restart leaves running tasks with nothing running them. `TaskServer.recover` deals with each one:
+
+- A **resumable** `TaskTool` runs again with the call that started it. Each step it finished through `task.step` returns its recorded result instead of running again, so the run picks up after its last finished step.
+- An answer that arrived while it was down is taken as soon as the task asks the same question again.
+- Any other task fails, with the message "the server restarted while this task ran".
+
+Retention is required. `TaskStore.journaled` takes a `defaultTtlMs` with no default of its own, and `task.retain(ttl)` sets how long one task is kept once it finishes, as its `ttlMs`. There is no keeping a task forever.
+
+```scala
+import cats.effect.Resource
+import java.nio.file.Files
+
+val reserve = TaskTool[IO, Order]("reserve", "Reserves an item, asks, then buys it.", resumable = true) { (order, task) =>
+  for {
+    _      <- task.retain(7.days)
+    held   <- task.step("reserve")(IO.pure(s"reserved ${order.item}"))
+    answer <- task.ask(Map("confirm" -> Elicit.form[Confirm](s"Buy ${order.item}?")))
+    yes     = answer.get("confirm").flatMap(_.hcursor.downField("content").get[Boolean]("confirm").toOption).contains(true)
+    done   <- task.step("buy")(IO.pure(if (yes) s"bought ${order.item}" else s"released ${order.item}"))
+  } yield s"$held, $done"
+}
+// reserve: TaskTool[[A >: Nothing <: Any] =>> IO[A]] = TaskTool(
+//   mcpTool = McpTool(
+//     definition = Tool(
+//       name = "reserve",
+//       inputSchema = ObjectSchema(
+//         properties = ListMap("item" -> JObject(object[type -> "string"])),
+//         required = List("item"),
+//         additional = object[]
+//       ),
+//       title = None,
+//       description = Some("Reserves an item, asks, then buys it."),
+//       outputSchema = None,
+//       annotations = None,
+//       icons = None,
+//       _meta = None
+//     ),
+//     invoke = ironmcp.server.McpTool$Builder$$Lambda/0x000000006399d148@66030790,
+//     emitting = None
+//   ),
+//   run = ironmcp.tasks.TaskTool$Builder$$Lambda/0x0000000063b0d3b8@74e9a1d5,
+//   resumable = true
+// )
+
+def durableShop(dir: java.nio.file.Path): Resource[IO, TaskServer[IO]] = for {
+  store  <- FileTaskJournal.open[IO](dir).flatMap(TaskStore.journaled[IO](_, defaultTtlMs = 30.days.toMillis))
+  random <- Resource.eval(SecureRandom.javaSecuritySecureRandom[IO])
+  base    = McpServer[IO](Implementation("shop", "1.0.0"), tools = Some(ToolSet.of(reserve.mcpTool)))
+  server  = TaskServer[IO](base, store, random, defaultPollIntervalMs = 10L, inputTools = List(reserve))
+  _      <- Resource.eval(server.recover)
+} yield server
+
+val journalDir = Files.createTempDirectory("shop-tasks")
+// journalDir: Path = /tmp/shop-tasks11604596306811215446
+
+// The first process starts a task, which stops to ask; then the process stops.
+val taskId: String = durableShop(journalDir).use { server =>
+  for {
+    client  <- TasksClient[IO](ClientTransport.inProcess[IO](server))
+    created <- client.callToolAsTask("reserve", JsonObject("item" -> "lamp".asJson))
+    id       = created match { case c: CreateTaskResult => c.taskId; case other => sys.error(s"$other") }
+    _       <- client.getTask(id).iterateUntil(_.status == TaskStatus.InputRequired)
+  } yield id
+}.unsafeRunSync()
+// taskId: String = "task-1a9228043cdbafaef62b04f38c906100"
+
+// The next process recovers it: still asking, and the answer finishes it.
+val resumed: GetTaskResult = durableShop(journalDir).use { server =>
+  for {
+    client <- TasksClient[IO](ClientTransport.inProcess[IO](server))
+    _      <- client.getTask(taskId).iterateUntil(_.status == TaskStatus.InputRequired)
+    _      <- client.updateTask(taskId, Map("confirm" -> ElicitResult(ElicitAction.Accept, Some(JsonObject("confirm" -> true.asJson))).asJson))
+    done   <- client.getTask(taskId).iterateUntil(_.status.isTerminal)
+  } yield done
+}.unsafeRunSync()
+// resumed: GetTaskResult = GetTaskResult(
+//   taskId = "task-1a9228043cdbafaef62b04f38c906100",
+//   status = Completed,
+//   pollIntervalMs = Some(10L),
+//   ttlMs = Some(604800000L),
+//   createdAt = Some(1795107422L),
+//   lastUpdatedAt = Some(1795107422L),
+//   result = Some(
+//     CallToolResult(
+//       content = List(
+//         Text(
+//           text = "reserved lamp, bought lamp",
+//           annotations = None,
+//           _meta = None
+//         )
+//       ),
+//       structuredContent = None,
+//       isError = Some(false),
+//       resultType = Complete,
+//       _meta = None
+//     )
+//   ),
+//   error = None,
+//   inputRequests = None,
+//   statusMessage = None
+// )
+
+println(resumed.result.flatMap(_.content.headOption))
+// Some(Text(reserved lamp, bought lamp,None,None))
+```
+
+`FileTaskJournal` is JVM-only for now. The store, its events and `recover` are cross-built, so a Native server can use a journal of its own.
+
+---
+
+## 7. Protocol Wire Messages Reference
 
 ### `tools/call` Response (Task Created)
 ```json

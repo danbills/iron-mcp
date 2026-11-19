@@ -193,7 +193,74 @@ println(bought.content.headOption)
 
 ---
 
-## 6. Protocol Wire Messages Reference
+## 6. Durable Tasks (`TaskStore.journaled`)
+
+`TaskStore.inMemory` loses every task when the process stops. `TaskStore.journaled` keeps them, in the manner of the LMAX architecture: the state lives in memory, every change is an event, and the events go to disk before anyone is answered.
+
+- **One writer.** A single fiber takes changes in order, decides each against the state in memory, and writes the batch's events with one write and one sync. Only then is the new state visible and the callers answered. Reads come from memory.
+- **Events and snapshots.** `FileTaskJournal` appends events to JSON-lines segments, and snapshots the whole state every `snapshotEvery` events and on a clean shutdown. Opening loads the latest snapshot and replays the events after it. A last line cut short by a crash is dropped, because its batch was never answered. Damage anywhere else fails the open rather than losing tasks quietly. The files are owner-only, since they hold tool arguments and results.
+- **Fail-stop.** If the journal cannot write, the store takes no more changes (`TaskJournalFailed`), so memory and disk never part ways.
+
+A process can't write down its fibers, so a restart leaves running tasks with nothing running them. `TaskServer.recover` deals with each one:
+
+- A **resumable** `TaskTool` runs again with the call that started it. Each step it finished through `task.step` returns its recorded result instead of running again, so the run picks up after its last finished step.
+- An answer that arrived while it was down is taken as soon as the task asks the same question again.
+- Any other task fails, with the message "the server restarted while this task ran".
+
+Retention is required. `TaskStore.journaled` takes a `defaultTtlMs` with no default of its own, and `task.retain(ttl)` sets how long one task is kept once it finishes, as its `ttlMs`. There is no keeping a task forever.
+
+```scala mdoc
+import cats.effect.Resource
+import java.nio.file.Files
+
+val reserve = TaskTool[IO, Order]("reserve", "Reserves an item, asks, then buys it.", resumable = true) { (order, task) =>
+  for {
+    _      <- task.retain(7.days)
+    held   <- task.step("reserve")(IO.pure(s"reserved ${order.item}"))
+    answer <- task.ask(Map("confirm" -> Elicit.form[Confirm](s"Buy ${order.item}?")))
+    yes     = answer.get("confirm").flatMap(_.hcursor.downField("content").get[Boolean]("confirm").toOption).contains(true)
+    done   <- task.step("buy")(IO.pure(if (yes) s"bought ${order.item}" else s"released ${order.item}"))
+  } yield s"$held, $done"
+}
+
+def durableShop(dir: java.nio.file.Path): Resource[IO, TaskServer[IO]] = for {
+  store  <- FileTaskJournal.open[IO](dir).flatMap(TaskStore.journaled[IO](_, defaultTtlMs = 30.days.toMillis))
+  random <- Resource.eval(SecureRandom.javaSecuritySecureRandom[IO])
+  base    = McpServer[IO](Implementation("shop", "1.0.0"), tools = Some(ToolSet.of(reserve.mcpTool)))
+  server  = TaskServer[IO](base, store, random, defaultPollIntervalMs = 10L, inputTools = List(reserve))
+  _      <- Resource.eval(server.recover)
+} yield server
+
+val journalDir = Files.createTempDirectory("shop-tasks")
+
+// The first process starts a task, which stops to ask; then the process stops.
+val taskId: String = durableShop(journalDir).use { server =>
+  for {
+    client  <- TasksClient[IO](ClientTransport.inProcess[IO](server))
+    created <- client.callToolAsTask("reserve", JsonObject("item" -> "lamp".asJson))
+    id       = created match { case c: CreateTaskResult => c.taskId; case other => sys.error(s"$other") }
+    _       <- client.getTask(id).iterateUntil(_.status == TaskStatus.InputRequired)
+  } yield id
+}.unsafeRunSync()
+
+// The next process recovers it: still asking, and the answer finishes it.
+val resumed: GetTaskResult = durableShop(journalDir).use { server =>
+  for {
+    client <- TasksClient[IO](ClientTransport.inProcess[IO](server))
+    _      <- client.getTask(taskId).iterateUntil(_.status == TaskStatus.InputRequired)
+    _      <- client.updateTask(taskId, Map("confirm" -> ElicitResult(ElicitAction.Accept, Some(JsonObject("confirm" -> true.asJson))).asJson))
+    done   <- client.getTask(taskId).iterateUntil(_.status.isTerminal)
+  } yield done
+}.unsafeRunSync()
+
+println(resumed.result.flatMap(_.content.headOption))
+```
+
+`FileTaskJournal` is JVM-only for now. The store, its events and `recover` are cross-built, so a Native server can use a journal of its own.
+
+---
+
+## 7. Protocol Wire Messages Reference
 
 ### `tools/call` Response (Task Created)
 ```json
