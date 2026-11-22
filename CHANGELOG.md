@@ -157,7 +157,8 @@ Both `ext-auth` extensions (OAuth Client Credentials, Enterprise-Managed Authori
 
 First release: the MCP 2026-07-28 protocol on a cross-platform Scala 3 core (JVM and Scala Native), with JSON Schema derived at compile time from Iron constraints, and the stdio transport.
 
-[Unreleased]: https://github.com/danbills/iron-mcp/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/danbills/iron-mcp/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/danbills/iron-mcp/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/danbills/iron-mcp/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/danbills/iron-mcp/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/danbills/iron-mcp/compare/v0.8.1...v0.9.0
