@@ -9,7 +9,6 @@ import io.circe.syntax.*
 import io.github.iltotore.iron.autoRefine
 import ironmcp.protocol.*
 
-import java.util.UUID
 
 enum TraceStatus:
   case Ok
@@ -266,11 +265,14 @@ object TraceRecorder:
   ): F[TraceRecorder[F]] =
     Ref.of[F, Vector[TraceSpan]](Vector.empty).map(new TraceRecorder[F](serviceName, serviceVersion, maxSpans, _))
 
+  /** Span and trace ids need to be unlikely to collide, not unguessable: `scala.util.Random`, since Scala Native has
+    * no `SecureRandom` (so no `UUID.randomUUID`).
+    */
   private[server] def randomHex16(): String =
-    UUID.randomUUID().toString.replace("-", "").take(16)
+    val hex = java.lang.Long.toHexString(scala.util.Random.nextLong())
+    "0" * (16 - hex.length) + hex
 
-  private[server] def randomHex32(): String =
-    UUID.randomUUID().toString.replace("-", "")
+  private[server] def randomHex32(): String = randomHex16() + randomHex16()
 
   private[server] def extractParent(params: Option[Json]): (String, Option[String]) =
     val tp = params.flatMap(_.hcursor.downField("_meta").get[String]("traceparent").toOption)

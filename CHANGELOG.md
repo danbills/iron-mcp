@@ -2,16 +2,21 @@
 
 All notable changes to iron-mcp. Versions follow [Semantic Versioning](https://semver.org); before 1.0, a minor version may break the API, and such changes are listed under **Breaking**. Artifacts are on Maven Central as `io.github.danbills:iron-mcp-*`.
 
-## [Unreleased]
+## [0.12.0] — 2026-11-22
 
 ### Added
 - **`iron-mcp-eventlog`**, a new cross-built module with nothing MCP in it (cats-effect and circe only): the engine under 0.11.0's durable tasks, for any event type `E` and state type `S`.
   - `Evolve[S, E]`: the state's start and how one event changes it.
   - `EventLog.inMemory` and `EventLog.journaled`: decisions taken one at a time against the state; `journaled` is the LMAX-style single writer with group commit, and stops taking changes if its journal fails (`JournalFailed`).
-  - `EventJournal` and, on the JVM, `FileEventJournal`: JSON-lines segments and snapshots, owner-only, as `FileTaskJournal` writes them.
+  - `EventJournal` and, on the JVM, `FileEventJournal`: JSON-lines segments and snapshots, owner-only, as `FileTaskJournal` writes them. It takes a circe `Encoder` and `Decoder` for the events and the state.
+- **`TraceRecorder`** (`iron-mcp-core`): records a server's JSON-RPC requests as spans.
+  - `TraceRecorder.inMemory(serviceName, serviceVersion, maxSpans = 500)` keeps the latest spans; `record` adds one of your own.
+  - `wrap(handler)` times every request, names its span by method and target (the tool, resource or prompt), continues a W3C `traceparent` from the request's `_meta`, and, unless `attachMeta = false`, adds `_meta.tracing` (`traceId`, `spanId`, `durationMs`, `server`) to each successful response.
+  - `snapshot` and `render(TraceFormat)` give the trace as plain JSON, Perfetto (Chrome trace events) or OTLP JSON; `resources` serves all three as `trace://server/*.json`.
+- **`TraceApp`** (`iron-mcp-apps`): an MCP App View (`ui://iron-mcp/trace.html`) over a `TraceRecorder`, with a waterfall timeline, latencies per operation (count, errors, average, p95, max) and exports. `TraceApp.tool(recorder)` is its tool (`server_trace` by default) and `TraceApp.resource` its View.
 
 ### Changed
-- **`iron-mcp-tasks`** is built on `iron-mcp-eventlog`. `TaskJournal[F]` is now `EventJournal[F, TaskEvent, TaskState]`, `TaskJournalFailed` is `JournalFailed`, and `FileTaskJournal.open` is `FileEventJournal.open` at those types. Source-compatible, and the files on disk are unchanged: a 0.11.0 journal opens as it was.
+- **`iron-mcp-tasks`** is built on `iron-mcp-eventlog`. `TaskJournal[F]` is now `EventJournal[F, TaskEvent, TaskState]`, `TaskJournalFailed` is `JournalFailed`, and `FileTaskJournal.open` is `FileEventJournal.open` at those types. Source-compatible, and the files on disk are unchanged: a 0.11.0 journal opens as it was. Error messages now say "journal" rather than "task journal": "the journal failed, so the log takes no more changes" and "journal <file> is unreadable".
 
 ## [0.11.0] — 2026-11-19
 
