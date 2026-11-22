@@ -258,6 +258,8 @@ println(resumed.result.flatMap(_.content.headOption))
 
 `FileTaskJournal` is JVM-only for now. The store, its events and `recover` are cross-built, so a Native server can use a journal of its own.
 
+The store is built on `iron-mcp-eventlog`, which has nothing MCP in it: `EventLog.journaled` is the single writer, and `FileEventJournal` the files, for any event type `E` and state `S` with an `Evolve[S, E]` and circe codecs. `TaskJournal[F]` is `EventJournal[F, TaskEvent, TaskState]`, and `FileTaskJournal.open` is `FileEventJournal.open` at those types, so a library that keeps state of its own can journal it the same way.
+
 ---
 
 ## 7. Protocol Wire Messages Reference

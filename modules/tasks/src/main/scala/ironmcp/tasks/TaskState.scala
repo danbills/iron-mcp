@@ -2,6 +2,7 @@ package ironmcp
 package tasks
 
 import io.circe.{Codec, Json}
+import ironmcp.eventlog.{EventJournal, Evolve, JournalFailed}
 import ironmcp.protocol.{CallToolParams, CallToolResult, JsonRpcError}
 import ironmcp.tasks.TaskModels.*
 
@@ -125,17 +126,13 @@ final case class TaskState(tasks: Map[String, TaskRecord]) derives Codec.AsObjec
 object TaskState:
   val empty: TaskState = TaskState(Map.empty)
 
+  given Evolve[TaskState, TaskEvent] with
+    def initial: TaskState                                  = empty
+    def apply(state: TaskState, event: TaskEvent): TaskState = state(event)
+
 /** Where a store's events go to last: [[TaskStore.journaled]] writes each batch here before answering. */
-trait TaskJournal[F[_]]:
+type TaskJournal[F[_]] = EventJournal[F, TaskEvent, TaskState]
 
-  /** The state the journal held when it was opened: its latest snapshot, with every later event applied. */
-  def recovered: TaskState
-
-  /** Writes `events` durably, in order. `after` is the state they lead to, which the journal may snapshot. */
-  def append(events: List[TaskEvent], after: TaskState): F[Unit]
-
-/** A journal could not write, so the store stopped taking changes: what is in memory and what is on disk would
-  * otherwise part ways. Restart the server to carry on from the journal.
-  */
-final case class TaskJournalFailed(cause: Throwable)
-    extends RuntimeException(s"the task journal failed, so the store takes no more changes: ${cause.getMessage}", cause)
+/** A journal could not write, so the store stopped taking changes: restart the server to carry on from the journal. */
+type TaskJournalFailed = JournalFailed
+val TaskJournalFailed: JournalFailed.type = JournalFailed

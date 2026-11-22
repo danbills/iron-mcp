@@ -2,6 +2,17 @@
 
 All notable changes to iron-mcp. Versions follow [Semantic Versioning](https://semver.org); before 1.0, a minor version may break the API, and such changes are listed under **Breaking**. Artifacts are on Maven Central as `io.github.danbills:iron-mcp-*`.
 
+## [Unreleased]
+
+### Added
+- **`iron-mcp-eventlog`**, a new cross-built module with nothing MCP in it (cats-effect and circe only): the engine under 0.11.0's durable tasks, for any event type `E` and state type `S`.
+  - `Evolve[S, E]`: the state's start and how one event changes it.
+  - `EventLog.inMemory` and `EventLog.journaled`: decisions taken one at a time against the state; `journaled` is the LMAX-style single writer with group commit, and stops taking changes if its journal fails (`JournalFailed`).
+  - `EventJournal` and, on the JVM, `FileEventJournal`: JSON-lines segments and snapshots, owner-only, as `FileTaskJournal` writes them.
+
+### Changed
+- **`iron-mcp-tasks`** is built on `iron-mcp-eventlog`. `TaskJournal[F]` is now `EventJournal[F, TaskEvent, TaskState]`, `TaskJournalFailed` is `JournalFailed`, and `FileTaskJournal.open` is `FileEventJournal.open` at those types. Source-compatible, and the files on disk are unchanged: a 0.11.0 journal opens as it was.
+
 ## [0.11.0] — 2026-11-19
 
 ### Breaking

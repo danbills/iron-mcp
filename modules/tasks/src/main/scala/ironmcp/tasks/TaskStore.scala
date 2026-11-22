@@ -1,15 +1,12 @@
 package ironmcp
 package tasks
 
-import cats.effect.std.Queue
-import cats.effect.syntax.all.*
 import cats.effect.{Async, Concurrent, Deferred, Ref, Resource, Temporal}
 import cats.syntax.all.*
 import io.circe.Json
+import ironmcp.eventlog.EventLog
 import ironmcp.protocol.{CallToolParams, CallToolResult, JsonRpcError}
 import ironmcp.tasks.TaskModels.*
-
-import scala.util.control.NonFatal
 
 /** Storage and state machine for background MCP tasks.
   *
@@ -85,22 +82,13 @@ object TaskStore:
       defaultPollIntervalMs: Long = 1000L,
       defaultTtlMs: Long = 300000L
   ): F[TaskStore[F]] =
-    Ref.of[F, TaskState](TaskState.empty).flatMap { ref =>
-      val sequencer = new Sequencer[F]:
-        def state: F[TaskState] = ref.get
-        def submit[A](decide: Decide[A]): F[(List[TaskEvent], A)] =
-          Temporal[F].realTime.flatMap { now =>
-            ref.modify { s =>
-              val (events, a) = decide(s, now.toMillis)
-              (events.foldLeft(s)(_.apply(_)), (events, a))
-            }
-          }
-      Ref.of[F, Map[String, Live[F]]](Map.empty).map(Store(sequencer, _, defaultPollIntervalMs, defaultTtlMs))
-    }
+    (EventLog.inMemory[F, TaskEvent, TaskState](TaskState.empty), Ref.of[F, Map[String, Live[F]]](Map.empty))
+      .mapN(Store(_, _, defaultPollIntervalMs, defaultTtlMs))
 
-  /** A store whose tasks outlive the process, in the manner of LMAX: one fiber takes changes in order, decides each
-    * against the state in memory, writes the batch's events to `journal` (one write and sync for up to `maxBatch`
-    * changes), and only then makes the new state visible and answers. Reads go to the state in memory.
+  /** A store whose tasks outlive the process, in the manner of LMAX ([[ironmcp.eventlog.EventLog.journaled]]): one fiber takes
+    * changes in order, decides each against the state in memory, writes the batch's events to `journal` (one write
+    * and sync for up to `maxBatch` changes), and only then makes the new state visible and answers. Reads go to
+    * the state in memory.
     *
     * It starts from the journal's state. Tasks it holds unfinished have no fiber: [[TaskServer.recover]] runs
     * them again or fails them. Should the journal fail, the store takes no more changes ([[TaskJournalFailed]]).
@@ -115,66 +103,13 @@ object TaskStore:
       maxBatch: Int = 1024
   ): Resource[F, TaskStore[F]] =
     for
-      _     <- Resource.eval(Async[F].raiseError[Unit](IllegalArgumentException(s"defaultTtlMs must be positive, was $defaultTtlMs")).whenA(defaultTtlMs <= 0))
-      ref   <- Resource.eval(Ref.of[F, TaskState](journal.recovered))
-      queue <- Resource.eval(Queue.unbounded[F, Op[F]])
-      _     <- processor(journal, ref, queue, math.max(1, maxBatch)).background
-      live  <- Resource.eval(Ref.of[F, Map[String, Live[F]]](Map.empty))
-    yield
-      val sequencer = new Sequencer[F]:
-        def state: F[TaskState] = ref.get
-        def submit[A](decide: Decide[A]): F[(List[TaskEvent], A)] =
-          Deferred[F, Either[Throwable, (List[TaskEvent], A)]].flatMap { reply =>
-            val op = Op[F](
-              (s, now) =>
-                val decided = decide(s, now)
-                (decided._1, reply.complete(Right(decided)).void)
-              ,
-              e => reply.complete(Left(e)).void
-            )
-            queue.offer(op) *> reply.get.rethrow
-          }
-      Store(sequencer, live, defaultPollIntervalMs, defaultTtlMs)
+      _    <- Resource.eval(Async[F].raiseError[Unit](IllegalArgumentException(s"defaultTtlMs must be positive, was $defaultTtlMs")).whenA(defaultTtlMs <= 0))
+      log  <- EventLog.journaled[F, TaskEvent, TaskState](journal, maxBatch)
+      live <- Resource.eval(Ref.of[F, Map[String, Live[F]]](Map.empty))
+    yield Store(log, live, defaultPollIntervalMs, defaultTtlMs)
 
   /** A change: its events and its answer, decided against the state and the time. */
   private type Decide[A] = (TaskState, Long) => (List[TaskEvent], A)
-
-  /** Applies decisions one at a time, in order. */
-  private trait Sequencer[F[_]]:
-    def state: F[TaskState]
-    def submit[A](decide: Decide[A]): F[(List[TaskEvent], A)]
-
-  /** A change waiting for the processor: decided, it gives its events and how to answer. */
-  private final case class Op[F[_]](decide: (TaskState, Long) => (List[TaskEvent], F[Unit]), fail: Throwable => F[Unit])
-
-  /** The single writer. A decision that throws fails its own change only; a journal that fails stops all. */
-  private def processor[F[_]](journal: TaskJournal[F], ref: Ref[F, TaskState], queue: Queue[F, Op[F]], maxBatch: Int)(using
-      F: Async[F]
-  ): F[Unit] =
-    def stopped(cause: TaskJournalFailed): F[Unit] =
-      queue.take.flatMap(_.fail(cause)).foreverM
-
-    def loop: F[Unit] =
-      (queue.take, queue.tryTakeN(Some(maxBatch - 1))).mapN(_ :: _).flatMap { batch =>
-        (ref.get, F.realTime).flatMapN { (start, time) =>
-          val now = time.toMillis
-          val (state, events, replies) =
-            batch.foldLeft((start, Vector.empty[TaskEvent], Vector.empty[F[Unit]])) { case ((s, es, rs), op) =>
-              try
-                val (out, reply) = op.decide(s, now)
-                (out.foldLeft(s)(_.apply(_)), es ++ out, rs :+ reply)
-              catch case NonFatal(e) => (s, es, rs :+ op.fail(e))
-            }
-          val written = if events.isEmpty then F.unit else journal.append(events.toList, state)
-          written.uncancelable.attempt.flatMap {
-            case Right(_) => ref.set(state) *> replies.sequence_ *> loop
-            case Left(e) =>
-              val failed = TaskJournalFailed(e)
-              batch.traverse_(_.fail(failed)) *> stopped(failed)
-          }
-        }
-      }
-    loop
 
   /** What lives only in this process: the fiber's cancel hook, and the wait of a task asking for input. */
   private final case class Live[F[_]](cancelHook: F[Unit], waiter: Option[Deferred[F, Unit]])
@@ -185,7 +120,7 @@ object TaskStore:
     case Over
 
   private final class Store[F[_]](
-      sequencer: Sequencer[F],
+      log: EventLog[F, TaskEvent, TaskState],
       live: Ref[F, Map[String, Live[F]]],
       defaultPollIntervalMs: Long,
       defaultTtlMs: Long
@@ -194,7 +129,7 @@ object TaskStore:
 
     /** Decides a change, then does what its events ask of this process. */
     private def change[A](decide: Decide[A]): F[A] =
-      sequencer.submit(decide).flatMap((events, a) => events.traverse_(react).as(a))
+      log.submit(decide).flatMap((events, a) => events.traverse_(react).as(a))
 
     private def react(event: TaskEvent): F[Unit] = event match
       case TaskEvent.Answered(id, _, _) =>
@@ -205,7 +140,7 @@ object TaskStore:
       case _                             => F.unit
 
     def get(taskId: String, owner: Option[String]): F[Option[GetTaskResult]] =
-      sequencer.state.map(_.tasks.get(taskId).filter(_.visibleTo(owner)).map(_.toGetResult))
+      log.state.map(_.tasks.get(taskId).filter(_.visibleTo(owner)).map(_.toGetResult))
 
     def create(
         taskId: String,
@@ -248,10 +183,10 @@ object TaskStore:
       change((s, now) => (s.tasks.get(taskId).map(_ => TaskEvent.RetentionSet(taskId, ttlMs, now)).toList, ()))
 
     def checkpoint(taskId: String, key: String): F[Option[Json]] =
-      sequencer.state.map(_.runningTask(taskId).flatMap(_.checkpoints.get(key)))
+      log.state.map(_.runningTask(taskId).flatMap(_.checkpoints.get(key)))
 
     def unfinished: F[List[UnfinishedTask]] =
-      sequencer.state.map(_.tasks.valuesIterator.filter(_.running).map(t => UnfinishedTask(t.taskId, t.call, t.owner)).toList)
+      log.state.map(_.tasks.valuesIterator.filter(_.running).map(t => UnfinishedTask(t.taskId, t.call, t.owner)).toList)
 
     private def whileRunning(taskId: String)(event: Long => TaskEvent): F[Unit] =
       change((s, now) => (s.runningTask(taskId).map(_ => event(now)).toList, ()))

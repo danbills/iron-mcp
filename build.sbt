@@ -191,10 +191,28 @@ lazy val otel = (project in file("modules/otel"))
     )
   )
 
+// An event-sourced state with a single writer, and a journal of its events on
+// disk (JVM). Nothing MCP in it: cats-effect and circe only, so a library that
+// is not an MCP server (dags) can keep its own state the way tasks do.
+lazy val eventlog = crossProject(JVMPlatform, NativePlatform)
+  .crossType(CrossType.Pure)
+  .in(file("modules/eventlog"))
+  .settings(
+    name        := "iron-mcp-eventlog",
+    description := "An event-sourced state with one writer and group commit, journaled to disk; what iron-mcp's durable tasks are built on.",
+    libraryDependencies ++= Seq(
+      "org.typelevel" %% "cats-effect"       % catsEffectVersion,
+      "io.circe"      %% "circe-core"        % circeVersion,
+      "io.circe"      %% "circe-parser"      % circeVersion,
+      "org.scalameta" %% "munit"             % munitVersion   % Test,
+      "org.typelevel" %% "munit-cats-effect" % munitCeVersion % Test
+    )
+  )
+
 lazy val tasks = crossProject(JVMPlatform, NativePlatform)
   .crossType(CrossType.Pure)
   .in(file("modules/tasks"))
-  .dependsOn(core)
+  .dependsOn(core, eventlog)
   .settings(
     name        := "iron-mcp-tasks",
     description := "The Tasks extension (io.modelcontextprotocol/tasks, SEP-2663) for iron-mcp, client and server.",
@@ -349,6 +367,6 @@ lazy val appsProbe = (project in file("modules/apps-probe/server"))
 lazy val root = (project in file("."))
   .aggregate(
     protocol.jvm, protocol.native, protocol.js, core.jvm, core.native, demo.jvm, demo.native, fixture.jvm, fixture.native, http, weather, nasa, otel, auth, otelAuth,
-    tasks.jvm, tasks.native, apps.jvm, apps.native, appsView, appsProbeView, appsProbe
+    eventlog.jvm, eventlog.native, tasks.jvm, tasks.native, apps.jvm, apps.native, appsView, appsProbeView, appsProbe
   )
   .settings(name := "iron-mcp", publish / skip := true)
