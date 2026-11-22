@@ -1,6 +1,7 @@
 package ironmcp
 package otel
 
+import io.github.iltotore.iron.autoRefine
 import ironmcp.protocol.{CallToolResult, ContentBlock}
 import munit.FunSuite
 

@@ -13,7 +13,7 @@ import io.opentelemetry.sdk.metrics.SdkMeterProvider
 import io.opentelemetry.sdk.testing.exporter.{InMemoryMetricReader, InMemorySpanExporter}
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.`export`.SimpleSpanProcessor
-import ironmcp.http.McpHeaders
+import ironmcp.http.{McpHeaders, McpHttp}
 import ironmcp.protocol.*
 import ironmcp.schema.JsonSchemaOf
 import ironmcp.server.*

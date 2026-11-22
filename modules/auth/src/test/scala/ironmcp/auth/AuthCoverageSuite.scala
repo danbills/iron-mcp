@@ -46,13 +46,7 @@ class AuthCoverageSuite extends CatsEffectSuite:
       sub = Some("alice"),
       aud = List("mcp"),
       exp = 9999999999L,
-      iat = None,
-      nbf = None,
-      jti = None,
-      scope = Set.empty,
-      clientId = None,
-      azp = None,
-      raw = Json.obj(
+      rawJson = Json.obj(
         "groups"         -> List("eng", "ops").asJson,
         "email"          -> "alice@Example.COM".asJson,
         "email_verified" -> true.asJson
@@ -75,20 +69,20 @@ class AuthCoverageSuite extends CatsEffectSuite:
 
   test("ClientRegistry rejects wrong secret, wrong method, unknown client, and bad assertions"):
     for
-      replay <- ReplayCache.inMemory[IO]
+      replay <- ReplayCache.inMemory[IO]()
       reg = ClientRegistry[IO](
         Map(
-          "sec-client" -> ClientCredential.Secret.of("correct-secret").toOption.get
+          "sec-client" -> ClientCredential.Secret.of("correct-secret-of-at-least-32-chars").toOption.get
         ),
         "https://idp.example",
         "https://idp.example/token",
         replay
       )
-      badSec   <- reg.authenticate(Headers.empty, Map("client_id" -> "sec-client", "client_secret" -> "wrong"))
-      noClient <- reg.authenticate(Headers.empty, Map("client_id" -> "missing", "client_secret" -> "x"))
-      noAuth   <- reg.authenticate(Headers.empty, Map.empty)
-      badType  <- reg.authenticate(Headers.empty, Map("client_assertion" -> "a.b.c", "client_assertion_type" -> "wrong"))
-      badJwt   <- reg.authenticate(Headers.empty, Map("client_assertion" -> "not-jwt", "client_assertion_type" -> ClientRegistry.AssertionType))
+      badSec   <- reg.authenticate(Map("client_id" -> "sec-client", "client_secret" -> "wrong"), Headers.empty)
+      noClient <- reg.authenticate(Map("client_id" -> "missing", "client_secret" -> "x"), Headers.empty)
+      noAuth   <- reg.authenticate(Map.empty, Headers.empty)
+      badType  <- reg.authenticate(Map("client_assertion" -> "a.b.c", "client_assertion_type" -> "wrong"), Headers.empty)
+      badJwt   <- reg.authenticate(Map("client_assertion" -> "not-jwt", "client_assertion_type" -> ClientRegistry.AssertionType), Headers.empty)
     yield
       assert(badSec.isLeft)
       assert(noClient.isLeft)
@@ -96,9 +90,12 @@ class AuthCoverageSuite extends CatsEffectSuite:
       assert(badType.isLeft)
       assert(badJwt.isLeft)
 
-  test("AuthAudit.stdout and AuthAudit.noop run cleanly"):
+  test("AuthAudit.jsonLines writes each event as one JSON line; both feeds two; noop drops it"):
     val ev = AuthEvent(0L, true, "ok", None, "tools/call", "tool:x", Some("alice"), None, None, None, None, Set.empty, Set.empty)
     for
-      _ <- AuthAudit.noop[IO].record(ev)
-      _ <- AuthAudit.stdout[IO].record(ev)
-    yield ()
+      lines <- IO.ref(Vector.empty[String])
+      _     <- AuthAudit.both(AuthAudit.noop[IO], AuthAudit.jsonLines[IO](l => lines.update(_ :+ l))).record(ev)
+      out   <- lines.get
+    yield
+      assertEquals(out.size, 1)
+      assertEquals(io.circe.parser.parse(out.head).flatMap(_.hcursor.get[String]("subject")), Right("alice"))
