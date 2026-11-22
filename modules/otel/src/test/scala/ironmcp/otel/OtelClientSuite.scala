@@ -84,8 +84,8 @@ class OtelClientSuite extends CatsEffectSuite:
         spans = spanExporter.getFinishedSpanItems.asScala.toList
         // Should have 2 spans: the server span and the client span
         _ = assertEquals(spans.size, 2)
-        serverSpan = spans.find(_.getKind.name() == "SERVER").get
-        clientSpan = spans.find(_.getKind.name() == "CLIENT").get
+        serverSpan = spans.find(_.getKind.name() == "SERVER").getOrElse(fail("no server span"))
+        clientSpan = spans.find(_.getKind.name() == "CLIENT").getOrElse(fail("no client span"))
 
         // Both spans share the same trace ID (distributed trace propagation works!)
         _ = assertEquals(serverSpan.getTraceId, clientSpan.getTraceId)

@@ -36,7 +36,7 @@ class JwksSuite extends CatsEffectSuite:
     }
 
   test("keys that may not verify signatures are dropped from a JWKS"):
-    val good = Jwk.fromPublicKey(rsa.getPublic, Some("sig")).toOption.get
+    val good = Jwk.fromPublicKey(rsa.getPublic, Some("sig")).fold(e => fail(e.toString), identity)
     val set = JwksKeySet(
       List(
         good,
@@ -50,7 +50,7 @@ class JwksSuite extends CatsEffectSuite:
     assertEquals(JwksKeySet.usable(set).keys.flatMap(_.kid), List("sig"))
 
   test("an EC point that is not on its curve is refused"):
-    val jwk = Jwk.fromPublicKey(ec.getPublic, Some("k")).toOption.get
+    val jwk = Jwk.fromPublicKey(ec.getPublic, Some("k")).fold(e => fail(e.toString), identity)
     val badY = Jwt.base64UrlEncode(Array.fill[Byte](32)(7))
     assert(jwk.copy(y = Some(badY)).toPublicKey.isLeft)
 
@@ -72,7 +72,7 @@ class JwksSuite extends CatsEffectSuite:
     })
 
   private def jwks(kps: (java.security.KeyPair, String)*): Json =
-    Json.obj("keys" -> kps.map((kp, kid) => Jwk.fromPublicKey(kp.getPublic, Some(kid)).toOption.get).asJson)
+    Json.obj("keys" -> kps.map((kp, kid) => Jwk.fromPublicKey(kp.getPublic, Some(kid)).fold(e => fail(e.toString), identity)).asJson)
 
   private val settings = JwksProvider.Settings(minRefetchInterval = 1.hour)
 

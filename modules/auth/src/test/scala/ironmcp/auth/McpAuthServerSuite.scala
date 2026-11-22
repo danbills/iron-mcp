@@ -64,7 +64,7 @@ class McpAuthServerSuite extends CatsEffectSuite:
 
   test("metadata names this resource, the issuer and the policy's scopes"):
     strict().run(Request[IO](Method.GET, uri"/.well-known/oauth-protected-resource/mcp")).flatMap(_.as[String]).map { body =>
-      val c = parser.parse(body).toOption.get.hcursor
+      val c = parser.parse(body).fold(e => fail(e.toString), identity).hcursor
       assertEquals(c.get[String]("resource"), Right(audience))
       assertEquals(c.get[List[String]]("authorization_servers"), Right(List(issuer)))
       assertEquals(c.get[List[String]]("scopes_supported"), Right(List("reports:export", "reports:read")))
@@ -110,8 +110,8 @@ class McpAuthServerSuite extends CatsEffectSuite:
 
   test("tools/list shows only callable tools, privately"):
     strict().run(mcp("tools/list", token = Some(hs(claims(scope = "reports:read"))))).flatMap(_.as[String]).map { body =>
-      val r = parser.parse(body).toOption.get.hcursor.downField("result")
-      val names = r.downField("tools").as[List[Json]].toOption.get.flatMap(_.hcursor.get[String]("name").toOption)
+      val r = parser.parse(body).fold(e => fail(e.toString), identity).hcursor.downField("result")
+      val names = r.downField("tools").as[List[Json]].fold(e => fail(e.toString), identity).flatMap(_.hcursor.get[String]("name").toOption)
       assertEquals(names, List("hello", "whoami", "read_summary"))
       assertEquals(r.get[String]("cacheScope"), Right("private"))
     }
@@ -139,7 +139,7 @@ class McpAuthServerSuite extends CatsEffectSuite:
       who  <- call("whoami", None, optional)
     yield
       assertEquals(pub, Some("hello"))
-      val names = parser.parse(list).toOption.get.hcursor.downField("result").downField("tools").as[List[Json]].toOption.get
+      val names = parser.parse(list).fold(e => fail(e.toString), identity).hcursor.downField("result").downField("tools").as[List[Json]].fold(e => fail(e.toString), identity)
         .flatMap(_.hcursor.get[String]("name").toOption)
       assertEquals(names, List("hello"))
       assertEquals(prot.status, Status.Unauthorized)
@@ -185,9 +185,9 @@ class McpAuthServerSuite extends CatsEffectSuite:
       _      <- app.run(mcp("tools/call", Some("read_summary"), None))
       lines  <- events.get
     yield
-      val parsed = lines.map(l => parser.parse(l).toOption.get.hcursor)
-      assertEquals(parsed.map(_.get[Boolean]("allowed").toOption.get), List(true, false, false))
-      assertEquals(parsed.map(_.get[String]("reason").toOption.get), List("ok", "insufficient_scope", "missing_token"))
+      val parsed = lines.map(l => parser.parse(l).fold(e => fail(e.toString), identity).hcursor)
+      assertEquals(parsed.map(_.get[Boolean]("allowed").fold(e => fail(e.toString), identity)), List(true, false, false))
+      assertEquals(parsed.map(_.get[String]("reason").fold(e => fail(e.toString), identity)), List("ok", "insufficient_scope", "missing_token"))
       assertEquals(parsed.head.get[String]("subject"), Right("alice"))
       assertEquals(parsed.head.get[String]("jti"), Right("t-1"))
       assert(lines.forall(!_.contains(token)))

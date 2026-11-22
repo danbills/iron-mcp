@@ -51,7 +51,7 @@ class IdJagIssuerSuite extends CatsEffectSuite:
   private def issuer(audit: Ref[IO, List[AuthEvent]]): IO[IdJagIssuer.Config[IO]] =
     ReplayCache.inMemory[IO]().map { replay =>
       val clients = Map(
-        "desktop" -> ClientCredential.Secret.of(secret).toOption.get,
+        "desktop" -> ClientCredential.Secret.of(secret).fold(e => fail(e.toString), identity),
         "kiosk"   -> ClientCredential.Keys(KeySet.of(vkey(clientKey, "kiosk-1")))
       )
       IdJagIssuer.Config[IO](
@@ -227,7 +227,7 @@ class IdJagIssuerSuite extends CatsEffectSuite:
                   .withContentType(`Content-Type`(MediaType.application.`x-www-form-urlencoded`))
                   .putHeaders(basic)
               ).use(r => IO.pure(r.headers.get(CIString("Cache-Control")).map(_.head.value)))
-      jwks <- http.expect[Json](s"$idpIssuer/jwks").map(_.as[JwksKeySet].toOption.get)
+      jwks <- http.expect[Json](s"$idpIssuer/jwks").map(_.as[JwksKeySet].fold(e => fail(e.toString), identity))
       meta <- http.expect[Json](s"$idpIssuer/.well-known/oauth-authorization-server")
     yield
       assertEquals(res, Some("no-store"))

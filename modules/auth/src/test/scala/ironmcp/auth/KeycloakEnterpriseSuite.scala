@@ -37,7 +37,7 @@ class KeycloakEnterpriseSuite extends CatsEffectSuite:
     "IRON_MCP_KC_IDJAG_ISSUER", "IRON_MCP_KC_IDJAG_KEY", "IRON_MCP_KC_MACHINE_KEY"
   )
   private val env = names.map(k => k -> sys.env.get(k)).toMap
-  private def setting(k: String) = env(k).get
+  private def setting(k: String) = env(k).getOrElse(fail(s"$k is not set"))
   private def requireEnv() = assume(env.values.forall(_.isDefined), s"set ${env.collect { case (k, None) => k }.mkString(", ")} to run against Keycloak")
 
   private def key(name: String) = Pem.privateKeyFile(Paths.get(setting(name))).fold(e => fail(e), identity)
@@ -52,8 +52,8 @@ class KeycloakEnterpriseSuite extends CatsEffectSuite:
         "grant_type" -> "password", "client_id" -> setting("IRON_MCP_KC_CORP_CLIENT"), "client_secret" -> setting("IRON_MCP_KC_CORP_SECRET"),
         "username" -> user, "password" -> password, "scope" -> "openid"
       )
-      http.expect[Json](Request[IO](Method.POST, Uri.unsafeFromString(oidc.hcursor.get[String]("token_endpoint").toOption.get)).withEntity(form))
-        .map(_.hcursor.get[String]("id_token").toOption.get)
+      http.expect[Json](Request[IO](Method.POST, Uri.unsafeFromString(oidc.hcursor.get[String]("token_endpoint").fold(e => fail(e.toString), identity))).withEntity(form))
+        .map(_.hcursor.get[String]("id_token").fold(e => fail(e.toString), identity))
     }
 
   private final case class World(
@@ -70,10 +70,10 @@ class KeycloakEnterpriseSuite extends CatsEffectSuite:
       val issuerUrl = setting("IRON_MCP_KC_IDJAG_ISSUER")
       val resource  = setting("IRON_MCP_KC_RESOURCE")
       for
-        as      <- json(ember, s"${setting("IRON_MCP_KC_REALM")}/.well-known/oauth-authorization-server").map(_.as[AuthorizationServerMetadata].toOption.get)
+        as      <- json(ember, s"${setting("IRON_MCP_KC_REALM")}/.well-known/oauth-authorization-server").map(_.as[AuthorizationServerMetadata].fold(e => fail(e.toString), identity))
         corp    <- json(ember, s"${setting("IRON_MCP_KC_CORP_REALM")}/.well-known/openid-configuration")
-        corpKeys <- JwksProvider.remote[IO](ember, Uri.unsafeFromString(corp.hcursor.get[String]("jwks_uri").toOption.get))
-        asKeys  <- JwksProvider.remote[IO](ember, Uri.unsafeFromString(as.jwks_uri.get))
+        corpKeys <- JwksProvider.remote[IO](ember, Uri.unsafeFromString(corp.hcursor.get[String]("jwks_uri").fold(e => fail(e.toString), identity)))
+        asKeys  <- JwksProvider.remote[IO](ember, Uri.unsafeFromString(as.jwks_uri.getOrElse(fail("the authorization server has no jwks_uri"))))
         replay  <- ReplayCache.inMemory[IO]()
         audit   <- Ref.of[IO, List[AuthEvent]](Nil)
         clientSecret = setting("IRON_MCP_KC_CORP_SECRET")
@@ -81,9 +81,9 @@ class KeycloakEnterpriseSuite extends CatsEffectSuite:
                    issuer = issuerUrl,
                    tokenEndpoint = s"$issuerUrl/token",
                    signer = IdJagIssuer.Signer(key("IRON_MCP_KC_IDJAG_KEY"), publicOf("IRON_MCP_KC_IDJAG_KEY"), JwsAlgorithm.ES256, "idjag-1"),
-                   ssoIssuer = corp.hcursor.get[String]("issuer").toOption.get,
+                   ssoIssuer = corp.hcursor.get[String]("issuer").fold(e => fail(e.toString), identity),
                    ssoKeys = corpKeys,
-                   clients = ClientRegistry[IO](Map(setting("IRON_MCP_KC_CORP_CLIENT") -> ClientCredential.Secret.of(clientSecret).toOption.get), issuerUrl, s"$issuerUrl/token", replay),
+                   clients = ClientRegistry[IO](Map(setting("IRON_MCP_KC_CORP_CLIENT") -> ClientCredential.Secret.of(clientSecret).fold(e => fail(e.toString), identity)), issuerUrl, s"$issuerUrl/token", replay),
                    policy = IdJagIssuer.Policy.rules[IO](
                      IdJagIssuer.Rule(
                        client = setting("IRON_MCP_KC_CORP_CLIENT"),
@@ -145,7 +145,7 @@ class KeycloakEnterpriseSuite extends CatsEffectSuite:
         first   <- EnterpriseAuth.redeem[IO](w.http, w.config, jag.access_token).attempt
         again   <- EnterpriseAuth.redeem[IO](w.http, w.config, jag.access_token).attempt
         now     <- IO.realTime.map(_.toSeconds)
-        payload  = Jwt.parse(jag.access_token).toOption.get.payload
+        payload  = Jwt.parse(jag.access_token).fold(e => fail(e.toString), identity).payload
         rogue    = AuthFixtures.ec
         forged   = Jwt.sign(JwsAlgorithm.ES256, rogue.getPrivate, JsonObject("typ" -> EnterpriseAuth.IdJagTyp.asJson, "kid" -> "idjag-1".asJson),
                      payload.mapObject(_.add("jti", s"forged-$now".asJson)))
@@ -163,12 +163,12 @@ class KeycloakEnterpriseSuite extends CatsEffectSuite:
     requireEnv()
     EmberClientBuilder.default[IO].build.use { http =>
       for
-        as     <- json(http, s"${setting("IRON_MCP_KC_REALM")}/.well-known/oauth-authorization-server").map(_.as[AuthorizationServerMetadata].toOption.get)
+        as     <- json(http, s"${setting("IRON_MCP_KC_REALM")}/.well-known/oauth-authorization-server").map(_.as[AuthorizationServerMetadata].fold(e => fail(e.toString), identity))
         dpop   <- Dpop.Key.generate[IO]
         auth    = ClientAuth.PrivateKeyJwt("iron-mcp-machine", key("IRON_MCP_KC_MACHINE_KEY"), JwsAlgorithm.ES256, Some("machine-1"))
         get    <- IO.fromEither(ClientCredentials.authorizer[IO](http, as, auth, setting("IRON_MCP_KC_RESOURCE"), Some(dpop)))
         token  <- get(Set("mcp:read"))
-        keys   <- JwksProvider.remote[IO](http, Uri.unsafeFromString(as.jwks_uri.get))
+        keys   <- JwksProvider.remote[IO](http, Uri.unsafeFromString(as.jwks_uri.getOrElse(fail("the authorization server has no jwks_uri"))))
         claims <- TokenValidator.jwks[IO](keys, TokenValidator.Config(as.issuer, setting("IRON_MCP_KC_RESOURCE"))).validate(token.access_token)
         secret <- IO.fromEither(ClientCredentials.authorizer[IO](http, as, ClientAuth.SecretPost("iron-mcp-machine", "not-its-method"), setting("IRON_MCP_KC_RESOURCE"))).flatMap(_(Set("mcp:read"))).attempt
       yield

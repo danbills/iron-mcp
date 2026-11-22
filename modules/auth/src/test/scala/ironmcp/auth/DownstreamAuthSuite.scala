@@ -66,8 +66,8 @@ class DownstreamAuthSuite extends CatsEffectSuite:
   /** The URL the tool asked the user to open, from its first answer. */
   private def askedUrl(result: CallToolResult | InputRequiredResult): (String, Option[String]) = result match
     case r: InputRequiredResult =>
-      val req = r.inputRequests.flatMap(_.get(DownstreamAuth.SignInKey)).get.hcursor.downField("params")
-      (req.get[String]("url").toOption.get, r.requestState)
+      val req = r.inputRequests.flatMap(_.get(DownstreamAuth.SignInKey)).getOrElse(fail(s"no sign-in request in $r")).hcursor.downField("params")
+      (req.get[String]("url").fold(e => fail(e.toString), identity), r.requestState)
     case other => fail(s"expected an input request, got $other")
 
   /** A browser: opens the start link, "approves" at the third party, follows the redirect back. */
@@ -155,12 +155,12 @@ class DownstreamAuthSuite extends CatsEffectSuite:
       vault <- IO.fromEither(TokenVault.encrypted[IO](store, vaultKey).left.map(new IllegalArgumentException(_)))
       token  = StoredToken("secret-access-token", Some("secret-refresh"), None, Set("x"))
       _     <- vault.put(Owner("i", "alice"), "gh", token)
-      raw   <- store.get(s"i alice\u0000gh")
-      _     <- store.put(s"i bob\u0000gh", raw.get) // an attacker copies alice's row to bob's
+      raw   <- store.get(s"i alice\u0000gh").flatMap(r => IO.fromOption(r)(AssertionError("alice's row is missing")))
+      _     <- store.put(s"i bob\u0000gh", raw) // an attacker copies alice's row to bob's
       moved <- vault.get(Owner("i", "bob"), "gh").attempt
       back  <- vault.get(Owner("i", "alice"), "gh")
     yield
-      assert(!new String(raw.get, UTF_8).contains("secret-access-token"))
+      assert(!new String(raw, UTF_8).contains("secret-access-token"))
       assert(moved.isLeft)
       assertEquals(back, Some(token))
       assert(!token.toString.contains("secret"))
@@ -173,7 +173,7 @@ class DownstreamAuthSuite extends CatsEffectSuite:
       anonymous <- SessionTools.whoami[IO](None, policy).run(CallToolParams("whoami", meta), Emit.none[IO])
     yield
       def session(r: CallToolResult | InputRequiredResult) = r match
-        case c: CallToolResult => c.structuredContent.flatMap(_.asObject).get
+        case c: CallToolResult => c.structuredContent.flatMap(_.asObject).getOrElse(fail(s"no structured content in $c"))
         case other             => fail(other.toString)
       val s = session(signedIn)
       assertEquals(s("unlocked").flatMap(_.asArray).map(_.flatMap(_.asString)), Some(Vector("read", "sign_out", "whoami")))

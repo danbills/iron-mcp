@@ -259,9 +259,10 @@ final class OAuthClient[F[_]](http: Client[F], random: SecureRandom[F], trust: S
         yield tokens
 
       held.get
+        .map(_.flatMap(previous => previous.refresh_token.map(previous -> _)))
         .flatMap {
-          case Some(previous) if scopes.subsetOf(previous.grantedScopes) && previous.refresh_token.isDefined =>
-            refresh(discovered, client, previous.refresh_token.get, scopes)
+          case Some((previous, refreshToken)) if scopes.subsetOf(previous.grantedScopes) =>
+            refresh(discovered, client, refreshToken, scopes)
               // A rotated refresh token replaces the old one; an expired or revoked one sends the user back.
               .map(fresh => fresh.copy(refresh_token = fresh.refresh_token.orElse(previous.refresh_token)))
               .handleErrorWith(_ => authorize)

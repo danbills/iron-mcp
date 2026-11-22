@@ -36,8 +36,8 @@ class AppsSuite extends CatsEffectSuite:
 
   test("tools/list carries _meta.ui and the legacy ui/resourceUri mirror"):
     client.flatMap(_.listTools()).map { result =>
-      val json = parser.parse(Wire.json(result.asJson)).toOption.get
-      val tools = json.hcursor.downField("tools").as[List[Json]].toOption.get
+      val json = parser.parse(Wire.json(result.asJson)).fold(fail("tools/list is not JSON", _), identity)
+      val tools = json.hcursor.downField("tools").as[List[Json]].fold(fail("no tools", _), identity)
       val show  = tools.head.hcursor.downField("_meta")
       assertEquals(show.downField("ui").get[String]("resourceUri"), Right("ui://demo/view.html"))
       assert(show.downField("ui").downField("visibility").failed, "no visibility means the host default")
@@ -61,7 +61,7 @@ class AppsSuite extends CatsEffectSuite:
             case List(ResourceContents.Text(_, html, mime, meta)) =>
               assertEquals(html, "<html><body>hi</body></html>")
               assertEquals(mime.map(m => m: String), Some("text/html;profile=mcp-app"))
-              val ui = meta.flatMap(_.get(McpApps.UiKey)).get
+              val ui = meta.flatMap(_.get(McpApps.UiKey)).getOrElse(fail("the View has no _meta.ui"))
               assertEquals(ui.hcursor.downField("csp").get[List[String]]("connectDomains"), Right(List("https://api.example.com")))
               assertEquals(ui.hcursor.get[Boolean]("prefersBorder"), Right(true))
               assertEquals(ui.hcursor.downField("permissions").focus, Some(Json.obj("microphone" -> Json.obj(), "clipboardWrite" -> Json.obj())))

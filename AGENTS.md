@@ -60,6 +60,7 @@ Releases are cut locally (no CI): `git tag -a v0.1.0`, then (after `scripts/cove
 
 - Scala 3.9.0, significant indentation (no braces).
 - Strict compiler flags (`-Wunused:all -Wvalue-discard -deprecation -feature -unchecked -Werror`): any warning fails the build, in every module, tests and Scala Native included. Shared JVM/Native code must be clean on both; prefer `@annotation.unused` to `@nowarn`, which warns on the platform where it suppresses nothing.
+- No `Option.get`, in library code or tests: WartRemover's `OptionPartial` is an error in every module (`build.sbt`). Handle the `None` (`fold`, a typed error, `F.fromOption`); in a test, `getOrElse(fail("what was missing"))`, or `fold(fail("what failed", _), identity)` for an `Either` (never `.toOption.get`).
 - No reflection, no Jackson, no hand-written JSON Schema: codecs derive at compile time from `Mirror` (Circe); hand-write one only where derivation cannot express the shape.
 - Express constraints as Iron refinement types (`String :| (Not[Empty] DescribedAs "...")`); the schema macro reads them. `DescribedAs` goes on the outermost type only.
 - Names follow domain vocabulary (`McpServer`, `ToolProvider`); one file per concept.

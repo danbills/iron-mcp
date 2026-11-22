@@ -326,7 +326,7 @@ def appServer(caller: Option[TokenClaims], revocations: RevocationList[IO]) =
 - `sign_out` revokes the caller's session on this server.
 - Each tool's access is also in its `_meta` under `io.github.danbills/auth`, for hosts that want to draw locks.
 
-In the View (`iron-mcp-apps-view`), `ViewAuth.session(view)` reads `whoami` into a `ViewSession`; `ViewAuth.unlock(view, session.lock("export").get)` runs the step-up and returns the new session, or an `Outcome` (`SignInRequired`, `MoreAccessRequired(scopes)`, `Forbidden`) when the host could not.
+In the View (`iron-mcp-apps-view`), `ViewAuth.session(view)` reads `whoami` into a `ViewSession`; `session.lock("export").traverse(ViewAuth.unlock(view, _))` runs the step-up for a tool the session holds locked, and gives the new session, or an `Outcome` (`SignInRequired`, `MoreAccessRequired(scopes)`, `Forbidden`) when the host could not.
 
 ### Third-party APIs, without token passthrough
 

@@ -23,7 +23,8 @@ class RecoverySuite extends CatsEffectSuite:
   private def send(line: String): IO[Json] =
     IO.fromEither(Wire.decode(line).left.map(e => AssertionError(e.toString)))
       .flatMap(server.handleRecovering)
-      .flatMap(reply => IO.fromEither(parser.parse(Wire.encode(reply.get))))
+      .flatMap(reply => IO.fromOption(reply)(AssertionError("no reply")))
+      .flatMap(reply => IO.fromEither(parser.parse(Wire.encode(reply))))
 
   test("McpException becomes its own error: -32002 for a missing resource"):
     send(s"""{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"file:///nope","_meta":$meta}}""").map { json =>

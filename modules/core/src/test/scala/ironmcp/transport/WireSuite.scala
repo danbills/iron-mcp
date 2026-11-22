@@ -22,7 +22,7 @@ class WireSuite extends CatsEffectSuite:
 
   test("an error before the id is known is answered against a null id"):
     val line = Wire.errorResponse(JsonRpcError(ErrorCode.ParseError, "bad"))
-    val json = parse(line).toOption.get.hcursor
+    val json = parse(line).fold(fail("the error is not JSON", _), identity).hcursor
     assertEquals(json.downField("id").focus, Some(Json.Null))
     assertEquals(json.downField("error").get[Int]("code"), Right(-32700))
 

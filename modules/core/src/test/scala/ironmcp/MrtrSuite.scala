@@ -68,12 +68,13 @@ class MrtrSuite extends CatsEffectSuite:
     val line = s"""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":${params.noSpaces}}"""
     IO.fromEither(Wire.decode(line).left.map(e => AssertionError(e.toString)))
       .flatMap(server.handle)
-      .flatMap(reply => IO.fromEither(parser.parse(Wire.encode(reply.get))))
-      .map(_.hcursor.downField("result").focus.get)
+      .flatMap(reply => IO.fromOption(reply)(AssertionError("no reply")))
+      .flatMap(reply => IO.fromEither(parser.parse(Wire.encode(reply))))
+      .flatMap(json => IO.fromOption(json.hcursor.downField("result").focus)(AssertionError(s"no result in $json")))
 
   private def accept(content: Json): Json = Json.obj("action" -> Json.fromString("accept"), "content" -> content)
-  private def text(result: Json): String  = result.hcursor.downField("content").downArray.get[String]("text").toOption.get
-  private def state(result: Json): String = result.hcursor.get[String]("requestState").toOption.get
+  private def text(result: Json): String  = result.hcursor.downField("content").downArray.get[String]("text").fold(fail("no text content", _), identity)
+  private def state(result: Json): String = result.hcursor.get[String]("requestState").fold(fail("no requestState", _), identity)
 
   test("the first call asks for a form derived from the type, with titles and defaults"):
     call().map { result =>
@@ -150,8 +151,9 @@ class UrlElicitationSuite extends CatsEffectSuite:
     val params = Json.obj("name" -> Json.fromString("sign_in"), "arguments" -> Json.obj(), "_meta" -> meta.asJson)
     IO.fromEither(Wire.decode(s"""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":${params.noSpaces}}""").left.map(e => AssertionError(e.toString)))
       .flatMap(server.handle)
-      .flatMap(reply => IO.fromEither(parser.parse(Wire.encode(reply.get))))
-      .map(_.hcursor.downField("result").focus.get)
+      .flatMap(reply => IO.fromOption(reply)(AssertionError("no reply")))
+      .flatMap(reply => IO.fromEither(parser.parse(Wire.encode(reply))))
+      .flatMap(json => IO.fromOption(json.hcursor.downField("result").focus)(AssertionError(s"no result in $json")))
 
   test("a client that declared elicitation.url is asked with mode url, the url and the elicitationId"):
     call(ElicitationCapability(url = Some(io.circe.JsonObject.empty))).map { result =>

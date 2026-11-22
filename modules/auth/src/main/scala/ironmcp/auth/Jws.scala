@@ -70,7 +70,7 @@ object Jws:
         val bits = if alg == ES256 then 256 else 384
         key match
           case k: ECKey if k.getParams.getCurve.getField.getFieldSize == bits => Right(())
-          case _: ECKey => Left(s"${alg.name} needs a key on ${alg.curve.get}")
+          case _: ECKey => Left(s"${alg.name} needs a key on ${alg.curve.getOrElse(s"a $bits-bit curve")}")
           case _        => Left(s"${alg.name} needs an EC key")
       case EdDSA =>
         key match

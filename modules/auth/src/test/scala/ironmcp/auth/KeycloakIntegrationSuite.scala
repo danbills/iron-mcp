@@ -19,7 +19,7 @@ class KeycloakIntegrationSuite extends CatsEffectSuite:
 
   private val env = List("IRON_MCP_KC_REALM", "IRON_MCP_KC_CLIENT", "IRON_MCP_KC_SECRET", "IRON_MCP_KC_RESOURCE").map(k => k -> sys.env.get(k)).toMap
 
-  private def setting(k: String) = env(k).get
+  private def setting(k: String) = env(k).getOrElse(fail(s"$k is not set"))
 
   test("live Keycloak: tokens are audience-bound, typed and verifiable; step-up widens them"):
     assume(env.values.forall(_.isDefined), s"set ${env.collect { case (k, None) => k }.mkString(", ")} to run against Keycloak")
@@ -39,8 +39,8 @@ class KeycloakIntegrationSuite extends CatsEffectSuite:
         wrong     <- otherAud.validate(read.access_token)
       yield
         assert(claims1.isRight, claims1.toString)
-        assert(claims1.toOption.get.scopes.contains("mcp:read"))
-        assert(!claims1.toOption.get.scopes.contains("mcp:export"))
+        assert(claims1.fold(e => fail(e.toString), identity).scopes.contains("mcp:read"))
+        assert(!claims1.fold(e => fail(e.toString), identity).scopes.contains("mcp:export"))
         assert(claims2.toOption.exists(_.hasScopes(Set("mcp:read", "mcp:export"))), claims2.toString)
         assertEquals(wrong.left.map(_.kind), Left("audience"))
     }

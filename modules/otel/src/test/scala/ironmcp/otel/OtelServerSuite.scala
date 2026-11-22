@@ -157,9 +157,8 @@ class OtelServerSuite extends CatsEffectSuite:
         _ = assertEquals(span.getAttributes.get(JAttributeKey.stringKey("mcp.error_rung")), "protocol")
         metrics = metricReader.collectAllMetrics().asScala.toList
         toolCalls = findMetric(metrics, McpSemantics.Metrics.ToolCalls)
-        _ = assert(toolCalls.isDefined)
-        // Cardinailty protection: since "unregistered_tool" is not in registered tools, metric stamped as "unknown"
-        hasUnknownDim = toolCalls.get.getLongSumData.getPoints.asScala.exists { pt =>
+        // Cardinality protection: since "unregistered_tool" is not in registered tools, metric stamped as "unknown"
+        hasUnknownDim = toolCalls.getOrElse(fail("no tool-calls metric")).getLongSumData.getPoints.asScala.exists { pt =>
           pt.getAttributes.get(JAttributeKey.stringKey("mcp.tool.name")) == "unknown"
         }
         _ = assert(hasUnknownDim)

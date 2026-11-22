@@ -7,7 +7,7 @@ import cats.effect.std.Queue
 import cats.effect.syntax.all.*
 import cats.syntax.all.*
 import fs2.Stream
-import com.comcast.ip4s.{Host, Port as IpPort}
+import com.comcast.ip4s.{Host, Port as IpPort, ipv4}
 import fs2.io.net.Network
 import io.circe.Json
 import io.github.iltotore.iron.autoRefine
@@ -156,13 +156,16 @@ object McpHttp:
       host: String = "127.0.0.1",
       logger: Option[Logger[F]] = None
   ): Resource[F, Server] =
-    EmberServerBuilder
-      .default[F]
-      .withLogger(logger.getOrElse(NoOpLogger[F]))
-      .withHost(Host.fromString(host).getOrElse(Host.fromString("127.0.0.1").get))
-      .withPort(IpPort.fromInt(port).get)
-      .withHttpApp(routes.orNotFound)
-      .build
+    // `Port` is 1-65535, which ip4s always takes; the Option is ip4s' own type.
+    Resource.eval(Async[F].fromOption(IpPort.fromInt(port), IllegalArgumentException(s"$port is not a TCP port"))).flatMap { ipPort =>
+      EmberServerBuilder
+        .default[F]
+        .withLogger(logger.getOrElse(NoOpLogger[F]))
+        .withHost(Host.fromString(host).getOrElse(ipv4"127.0.0.1"))
+        .withPort(ipPort)
+        .withHttpApp(routes.orNotFound)
+        .build
+    }
 
   private def post[F[_]](
       request: Request[F],
@@ -237,9 +240,9 @@ object McpHttp:
       case "resources/read"             => params.flatMap(_.hcursor.get[String]("uri").toOption).map(Some(_))
       case _                            => Some(None)
 
-    header(ProtocolVersionHeader) match
-      case None => Some(mismatch("the MCP-Protocol-Version header is required"))
-      case Some(version) if version != supported =>
+    (header(ProtocolVersionHeader), bodyVersion) match
+      case (None, _) => Some(mismatch("the MCP-Protocol-Version header is required"))
+      case (Some(version), _) if version != supported =>
         Some(
           JsonRpcError(
             ErrorCode.UnsupportedProtocolVersion,
@@ -247,9 +250,9 @@ object McpHttp:
             Some(Json.obj("supported" -> Json.arr(Json.fromString(supported)), "requested" -> Json.fromString(version)))
           )
         )
-      case Some(version) if bodyVersion.exists(_ != version) =>
-        Some(mismatch(s"MCP-Protocol-Version header '$version' does not match the body's '${bodyVersion.get}'"))
-      case Some(_) =>
+      case (Some(version), Some(body)) if body != version =>
+        Some(mismatch(s"MCP-Protocol-Version header '$version' does not match the body's '$body'"))
+      case (Some(_), _) =>
         header(MethodHeader) match
           case None                         => Some(mismatch("the Mcp-Method header is required"))
           case Some(value) if value != method => Some(mismatch(s"Mcp-Method header '$value' does not match body method '$method'"))

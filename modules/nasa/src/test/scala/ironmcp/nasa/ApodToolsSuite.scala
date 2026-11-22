@@ -43,7 +43,7 @@ class ApodToolsSuite extends CatsEffectSuite:
         case ApodOp.PictureOf(date) =>
           assertEquals(date.map(d => d: String), Some("2026-09-29"))
           Right(picture)
-    val result = call(ApodTools(canned), "date" -> "2026-09-29".asJson).toOption.get
+    val result = call(ApodTools(canned), "date" -> "2026-09-29".asJson).fold(fail("get_apod failed", _), identity)
     assertEquals(
       text(result),
       "APOD 2026-09-29 — Pillars\nMedia: image\nURL: https://apod.test/p.jpg\nHD:  https://apod.test/p_hd.jpg\nCredit: A. Astronomer\n\nGas and dust."
@@ -52,8 +52,9 @@ class ApodToolsSuite extends CatsEffectSuite:
   test("a malformed date never reaches the API"):
     val unreachable = new (ApodOp ~> Result):
       def apply[A](op: ApodOp[A]): Result[A] = fail(s"called with $op")
-    val result = call(ApodTools(unreachable), "date" -> "yesterday".asJson).toOption.get
-    assertEquals(result.asInstanceOf[CallToolResult].isError, Some(true))
+    call(ApodTools(unreachable), "date" -> "yesterday".asJson) match
+      case Right(r: CallToolResult) => assertEquals(r.isError, Some(true))
+      case other                    => fail(s"expected a tool error, got $other")
 
   private def nasa(respond: org.http4s.Request[IO] => Response[IO]) =
     Client.fromHttpApp(HttpApp[IO](req => IO.pure(respond(req))))

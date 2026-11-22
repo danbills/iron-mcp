@@ -42,6 +42,14 @@ class TaskServerSuite extends CatsEffectSuite:
     )
   ).asJson
 
+  /** The result of a reply that succeeded; anything else fails the test. */
+  private def resultOf(reply: Option[JsonRpcMessage]): Json = reply match
+    case Some(JsonRpcMessage.Success(_, result)) => result
+    case other                                    => fail(s"expected a result, got $other")
+
+  private def taskIdOf(reply: Option[JsonRpcMessage]): String =
+    resultOf(reply).hcursor.get[String]("taskId").fold(fail("the result has no taskId", _), identity)
+
   private def setupServer: IO[TaskServer[IO]] =
     for
       random <- SecureRandom.javaSecuritySecureRandom[IO]
@@ -69,7 +77,7 @@ class TaskServerSuite extends CatsEffectSuite:
       )
       res <- server.handle(req)
       _ = assert(res.isDefined)
-      json = res.get.asInstanceOf[JsonRpcMessage.Success].result
+      json = resultOf(res)
       extensions = json.hcursor.downField("capabilities").downField("extensions")
       _ = assert(extensions.downField("io.modelcontextprotocol/tasks").succeeded)
     yield ()
@@ -90,7 +98,7 @@ class TaskServerSuite extends CatsEffectSuite:
       )
       res <- server.handle(req)
       _ = assert(res.isDefined)
-      json = res.get.asInstanceOf[JsonRpcMessage.Success].result
+      json = resultOf(res)
       _ = assertEquals(json.hcursor.get[String]("resultType"), Right("complete"))
       content = json.hcursor.downField("content").downArray.get[String]("text")
       _ = assertEquals(content, Right("Echo: 42"))
@@ -112,9 +120,9 @@ class TaskServerSuite extends CatsEffectSuite:
       )
       res <- server.handle(req)
       _ = assert(res.isDefined)
-      json = res.get.asInstanceOf[JsonRpcMessage.Success].result
+      json = resultOf(res)
       _ = assertEquals(json.hcursor.get[String]("resultType"), Right("task"))
-      taskId = json.hcursor.get[String]("taskId").toOption.get
+      taskId = json.hcursor.get[String]("taskId").fold(fail("the result has no taskId", _), identity)
       _ = assertEquals(json.hcursor.get[TaskStatus]("status"), Right(TaskStatus.Working))
 
       // Wait a moment for the background fiber to complete
@@ -128,7 +136,7 @@ class TaskServerSuite extends CatsEffectSuite:
       )
       getRes <- server.handle(getReq)
       _ = assert(getRes.isDefined)
-      getJson = getRes.get.asInstanceOf[JsonRpcMessage.Success].result
+      getJson = resultOf(getRes)
       _ = assertEquals(getJson.hcursor.get[TaskStatus]("status"), Right(TaskStatus.Completed))
       text = getJson.hcursor.downField("result").downField("content").downArray.get[String]("text")
       _ = assertEquals(text, Right("Report generated after 0s."))
@@ -149,7 +157,7 @@ class TaskServerSuite extends CatsEffectSuite:
         )
       )
       res <- server.handle(req)
-      taskId = res.get.asInstanceOf[JsonRpcMessage.Success].result.hcursor.get[String]("taskId").toOption.get
+      taskId = taskIdOf(res)
 
       // Request cancellation
       cancelReq = JsonRpcMessage.Request(
@@ -167,7 +175,7 @@ class TaskServerSuite extends CatsEffectSuite:
         params = Some(Json.obj("taskId" -> taskId.asJson, "_meta" -> tasksMeta))
       )
       getRes <- server.handle(getReq)
-      getJson = getRes.get.asInstanceOf[JsonRpcMessage.Success].result
+      getJson = resultOf(getRes)
       _ = assertEquals(getJson.hcursor.get[TaskStatus]("status"), Right(TaskStatus.Cancelled))
     yield ()
 
@@ -194,14 +202,14 @@ class TaskServerSuite extends CatsEffectSuite:
           params = Some(Json.obj("name" -> "generate_report".asJson, "arguments" -> Json.obj("seconds" -> 0.asJson), "_meta" -> tasksMeta))
         )
       )
-      taskId = res.get.asInstanceOf[JsonRpcMessage.Success].result.hcursor.get[String]("taskId").toOption.get
+      taskId = taskIdOf(res)
       _ <- IO.sleep(200.millis)
       getRes <- server.handle(
         JsonRpcMessage.Request(RequestId.Num(6L), "tasks/get", Some(Json.obj("taskId" -> taskId.asJson, "_meta" -> tasksMeta)))
       )
       hooked <- seen.get
     yield
-      val snapshot = getRes.get.asInstanceOf[JsonRpcMessage.Success].result
+      val snapshot = resultOf(getRes)
       assertEquals(snapshot.hcursor.get[TaskStatus]("status"), Right(TaskStatus.Failed))
       assertEquals(snapshot.hcursor.downField("error").get[Int]("code"), Right(-32603))
       assert(!snapshot.noSpaces.contains("hunter2"))
@@ -249,7 +257,7 @@ class TaskServerSuite extends CatsEffectSuite:
       r3 <- server.handle(JsonRpcMessage.Request(RequestId.Num(11), "tools/call", Some(Json.obj("name" -> "empty".asJson, "_meta" -> tasksMeta))))
       r4 <- server.handle(JsonRpcMessage.Request(RequestId.Num(12), "tools/call", Some(Json.obj("name" -> "mcp_err".asJson, "_meta" -> tasksMeta))))
       _  <- IO.sleep(150.millis)
-      tIds = List(r1, r2, r3, r4).map(_.get.asInstanceOf[JsonRpcMessage.Success].result.hcursor.get[String]("taskId").toOption.get)
+      tIds = List(r1, r2, r3, r4).map(taskIdOf(_))
       snaps <- tIds.traverse(id => store.get(id, None))
     yield
       assert(badGet.exists(_.isInstanceOf[JsonRpcMessage.Failure]))
@@ -258,7 +266,7 @@ class TaskServerSuite extends CatsEffectSuite:
       assert(badUpdate.exists(_.isInstanceOf[JsonRpcMessage.Failure]))
       assert(missUpdate.exists(_.isInstanceOf[JsonRpcMessage.Failure]))
       assert(okUpdate.exists(_.isInstanceOf[JsonRpcMessage.Success]))
-      assert(disc.get.asInstanceOf[JsonRpcMessage.Success].result.hcursor.downField("capabilities").downField("extensions").downField("other").succeeded)
+      assert(resultOf(disc).hcursor.downField("capabilities").downField("extensions").downField("other").succeeded)
       assertEquals(notif, None)
       assertEquals(otherReq, None)
       assert(snaps.forall(_.exists(_.status == TaskStatus.Failed)))
@@ -277,5 +285,5 @@ class TaskServerSuite extends CatsEffectSuite:
       d1     <- srv.handle(JsonRpcMessage.Request(RequestId.Num(1), "server/discover", None))
       d2     <- srv.handleRecovering(JsonRpcMessage.Request(RequestId.Num(2), "ping", None))
     yield
-      assert(d1.get.asInstanceOf[JsonRpcMessage.Success].result.hcursor.downField("capabilities").downField("extensions").downField(CapabilityName).succeeded)
+      assert(resultOf(d1).hcursor.downField("capabilities").downField("extensions").downField(CapabilityName).succeeded)
       assertEquals(d2, None)

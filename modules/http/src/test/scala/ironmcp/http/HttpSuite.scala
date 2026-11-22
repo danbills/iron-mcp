@@ -201,7 +201,7 @@ class HttpProgressSuite extends CatsEffectSuite:
       assertEquals(response.status, Status.Ok)
       assert(isStream(response), response.contentType.toString)
       response.body.through(ServerSentEvent.decoder[IO]).compile.toList.map { events =>
-        val messages = events.flatMap(_.data).map(parser.parse(_).toOption.get)
+        val messages = events.flatMap(_.data).map(parser.parse(_).fold(fail("an event is not JSON", _), identity))
         assertEquals(messages.map(_.hcursor.get[String]("method").toOption), List(Some("notifications/progress"), Some("notifications/progress"), None))
         assertEquals(messages.last.hcursor.get[Int]("id"), Right(4))
         assertEquals(messages.last.hcursor.downField("result").downField("content").downArray.get[String]("text"), Right("Done after 2 steps."))
@@ -211,7 +211,7 @@ class HttpProgressSuite extends CatsEffectSuite:
   test("no progressToken, nothing emitted: plain JSON even when SSE is accepted"):
     post(withToken = false, accept = "application/json, text/event-stream").flatMap { response =>
       assert(!isStream(response))
-      response.as[String].map(text => assertEquals(parser.parse(text).toOption.get.hcursor.get[Int]("id"), Right(4)))
+      response.as[String].map(text => assertEquals(parser.parse(text).flatMap(_.hcursor.get[Int]("id")), Right(4)))
     }
 
   test("a client that does not accept SSE gets plain JSON, without the notifications"):

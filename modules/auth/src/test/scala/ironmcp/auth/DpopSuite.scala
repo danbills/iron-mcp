@@ -23,8 +23,8 @@ class DpopSuite extends CatsEffectSuite:
   private def rawProof(key: Dpop.Key, claims: JsonObject, typ: String = Dpop.ProofType, jwk: Json = Json.Null): IO[String] =
     // A hand-built proof, to break one rule at a time.
     key.proof[IO]("POST", htu, Some("tok")).map { good =>
-      val parts   = Jwt.parse(good).toOption.get
-      val payload = parts.payload.asObject.get.deepMerge(claims)
+      val parts   = Jwt.parse(good).fold(e => fail(e.toString), identity)
+      val payload = parts.payload.asObject.getOrElse(fail("the payload is not an object")).deepMerge(claims)
       val header  = parts.header.add("typ", typ.asJson).add("jwk", if jwk.isNull then key.jwk.asJson else jwk)
       // Re-sign with a throwaway key only when the jwk is replaced; otherwise the
       // signature would not verify and hide the rule under test.
@@ -36,7 +36,7 @@ class DpopSuite extends CatsEffectSuite:
   // The tests sign with the key's private half through this backdoor-free route:
   // they generate their own key pair and wrap it.
   private lazy val pair = AuthFixtures.ec
-  private lazy val key: Dpop.Key = Dpop.Key.of(pair, JwsAlgorithm.ES256).toOption.get
+  private lazy val key: Dpop.Key = Dpop.Key.of(pair, JwsAlgorithm.ES256).fold(e => fail(e.toString), identity)
   private def ecPrivate(k: Dpop.Key) = { val _ = k; pair.getPrivate }
 
   private def now = System.currentTimeMillis() / 1000
@@ -135,7 +135,7 @@ class DpopSuite extends CatsEffectSuite:
       val parsed = AuthChallenge.parse(r.headers.get(CIString("WWW-Authenticate")).toList.flatMap(_.toList.map(_.value)))
       assertEquals(parsed.map(_.scheme), List("DPoP"))
       assert(parsed.head.param("algs").exists(_.contains("ES256")))
-      val m = parser.parse(meta).toOption.get.hcursor
+      val m = parser.parse(meta).fold(e => fail(e.toString), identity).hcursor
       assertEquals(m.get[Boolean]("dpop_bound_access_tokens_required"), Right(true))
 
   test("DPoP allowed: an unbound Bearer token still works, and challenges offer both schemes"):

@@ -19,7 +19,7 @@ class TokenValidatorSuite extends CatsEffectSuite:
 
   test("a good RS256 access token passes, with its claims"):
     rsaValidator.validate(rs(claims(scope = "mcp:read mcp:export"))).map { r =>
-      val c = r.toOption.get
+      val c = r.fold(e => fail(e.toString), identity)
       assertEquals(c.sub, Some("alice"))
       assertEquals(c.scopes, Set("mcp:read", "mcp:export"))
     }

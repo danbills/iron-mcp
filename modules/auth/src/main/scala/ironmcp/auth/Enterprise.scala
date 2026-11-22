@@ -241,16 +241,16 @@ object EnterpriseAuth:
       case Left(e) => e.asLeft[TokenClaims].pure[F]
       case Right(parts) =>
         val iss = parts.payload.hcursor.get[String]("iss").toOption
-        (iss.flatMap(trustedIdps.get), Jwt.algorithm(parts, JwsAlgorithm.asymmetric)) match
+        (iss.flatMap(i => trustedIdps.get(i).map(i -> _)), Jwt.algorithm(parts, JwsAlgorithm.asymmetric)) match
           case (None, _)        => AuthError.IssuerMismatch("a trusted IdP", iss.getOrElse("")).asLeft[TokenClaims].pure[F]
           case (_, Left(e))     => e.asLeft[TokenClaims].pure[F]
-          case (Some(keys), Right(alg)) =>
+          case (Some((issuer, keys)), Right(alg)) =>
             keys.select(parts.keyId, alg).flatMap {
               case Left(e) => e.asLeft[TokenClaims].pure[F]
               case Right(key) =>
                 Async[F].realTime.map(_.toSeconds).flatMap { now =>
                   val profile = TokenValidator.AccessTokenProfile("id-jag", (p, _) => Either.cond(p.typ.contains(IdJagTyp), (), s"typ is not $IdJagTyp"))
-                  val config  = TokenValidator.Config(iss.get, asIssuer, profile = profile, clockSkew = clockSkew)
+                  val config  = TokenValidator.Config(issuer, asIssuer, profile = profile, clockSkew = clockSkew)
                   val checked = for
                     _      <- Jwt.verify(parts, key.key, Set(alg))
                     claims <- TokenValidator.checkClaims(parts, now, config)

@@ -34,8 +34,7 @@ class TaskModelsSuite extends FunSuite:
     assertEquals(json.hcursor.get[TaskStatus]("status"), Right(TaskStatus.Working))
     assertEquals(json.hcursor.get[Long]("pollIntervalMs"), Right(1500L))
 
-    val decoded = json.as[CreateTaskResult].toOption.get
-    assertEquals(decoded, created)
+    assertEquals(json.as[CreateTaskResult], Right(created))
 
   test("GetTaskResult with inlined CallToolResult"):
     val callResult = CallToolResult(content = List(ContentBlock.Text("Report generated successfully.")))
@@ -48,12 +47,10 @@ class TaskModelsSuite extends FunSuite:
     val json = snapshot.asJson
     assertEquals(json.hcursor.get[TaskStatus]("status"), Right(TaskStatus.Completed))
 
-    val decoded = json.as[GetTaskResult].toOption.get
+    val decoded = json.as[GetTaskResult].fold(fail("GetTaskResult did not decode", _), identity)
     assertEquals(decoded.status, TaskStatus.Completed)
-    val inlinedText = decoded.result.get.content.head match
-      case ContentBlock.Text(t, _, _) => t
-      case _                          => ""
-    assertEquals(inlinedText, "Report generated successfully.")
+    val inlinedText = decoded.result.flatMap(_.content.headOption).collect { case ContentBlock.Text(t, _, _) => t: String }
+    assertEquals(inlinedText, Some("Report generated successfully."))
 
   test("TaskStatus input_required and unknown status, plus default case class fields"):
     assertEquals((TaskStatus.InputRequired: TaskStatus).asJson.noSpaces, "\"input_required\"")

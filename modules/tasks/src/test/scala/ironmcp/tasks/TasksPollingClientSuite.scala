@@ -68,8 +68,7 @@ class TasksPollingClientSuite extends CatsEffectSuite:
       // Poll until completed
       finalSnap <- IO.sleep(100.millis) *> client.getTask(created.taskId)
       _ = assertEquals(finalSnap.status, TaskStatus.Completed)
-      _ = assert(finalSnap.result.isDefined)
-      text = finalSnap.result.get.content.headOption.map(_.asInstanceOf[ContentBlock.Text].text)
+      text = finalSnap.result.flatMap(_.content.headOption).collect { case ContentBlock.Text(t, _, _) => t }
       _ = assertEquals(text, Some("Processed: hello async".assume[Not[Empty]]))
     yield ()
 
@@ -131,10 +130,9 @@ class TasksPollingClientSuite extends CatsEffectSuite:
     for
       (client, _) <- setupClientAndServer()
       attempt <- client.getTask("no-such-task").attempt
-      _ = assert(attempt.isLeft)
-      _ = attempt.left.toOption.get match
-        case McpClientError.Rpc(err) => assertEquals(err.code, ErrorCode.InvalidParams)
-        case other                   => fail(s"Expected McpClientError.Rpc, got $other")
+      _ = attempt match
+        case Left(McpClientError.Rpc(err)) => assertEquals(err.code, ErrorCode.InvalidParams)
+        case other                         => fail(s"Expected McpClientError.Rpc, got $other")
     yield ()
 
   test("task IDs are 128 random bits, not a timestamp"):

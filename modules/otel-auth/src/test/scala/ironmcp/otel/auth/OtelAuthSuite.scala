@@ -45,5 +45,6 @@ class OtelAuthSuite extends CatsEffectSuite:
       data   <- IO(reader.collectAllMetrics().asScala.toList)
     yield
       val points = data.filter(_.getName == OtelAuth.Decisions).flatMap(_.getLongSumData.getPoints.asScala)
-      val byReason = points.map(p => p.getAttributes.asMap.asScala.collectFirst { case (k, v) if k.getKey == "mcp.auth.reason" => v.toString }.get -> p.getValue).toMap
+      val byReason = points.flatMap(p => p.getAttributes.asMap.asScala.collectFirst { case (k, v) if k.getKey == "mcp.auth.reason" => v.toString -> p.getValue }).toMap
+      assertEquals(byReason.size, points.size, "every point carries mcp.auth.reason")
       assertEquals(byReason, Map("ok" -> 1L, "audience" -> 2L))

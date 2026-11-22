@@ -89,7 +89,10 @@ class EnterpriseSuite extends CatsEffectSuite:
             val basic = req.headers.get[org.http4s.headers.Authorization].collect { case org.http4s.headers.Authorization(BasicCredentials(u, _)) => u }
             EnterpriseAuth.verifyIdJag[IO](f("assertion").getOrElse(""), asIssuer, trusted, basic.getOrElse(""), Set(audience), replay).flatMap {
               case Left(e)  => oauthError(s"invalid_grant: ${e.kind}")
-              case Right(c) => Ok(TokenResponse(mint(c.sub.get, c.clientId.get, c.scope.getOrElse("")), "Bearer", Some(300), scope = c.scope).asJson)
+              case Right(c) =>
+                c.sub.zip(c.clientId) match
+                  case Some((sub, client)) => Ok(TokenResponse(mint(sub, client, c.scope.getOrElse("")), "Bearer", Some(300), scope = c.scope).asJson)
+                  case None                => oauthError("invalid_grant: the ID-JAG has no sub or client_id")
             }
           case Some("client_credentials") =>
             val assertion = f("client_assertion").getOrElse("")
@@ -101,7 +104,7 @@ class EnterpriseSuite extends CatsEffectSuite:
               _     <- Either.cond(c.get[String]("aud").toOption.contains(asIssuer), (), AuthError.WrongAudience(asIssuer, Nil))
               _     <- Either.cond(f("client_assertion_type").contains("urn:ietf:params:oauth:client-assertion-type:jwt-bearer"), (), AuthError.MalformedToken("type"))
               _     <- Either.cond(f("resource").contains(audience), (), AuthError.WrongAudience(audience, Nil))
-            yield c.get[String]("jti").toOption.get
+            yield c.get[String]("jti").fold(e => fail(e.toString), identity)
             check match
               case Left(_) => oauthError("invalid_client")
               case Right(jti) =>

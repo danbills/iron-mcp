@@ -62,6 +62,10 @@ ThisBuild / scalacOptions ++= Seq(
   "-Werror"
 )
 
+// No `Option.get`, in library code or tests: it throws on `None`. Handle the
+// `None`, or in a test fail with what was missing (`getOrElse(fail(...))`).
+ThisBuild / wartremoverErrors := Seq(Wart.OptionPartial)
+
 // No reflection anywhere in this build: every codec is derived at compile time
 // from a Mirror, so the whole thing survives Scala Native and GraalVM
 // native-image with no reachability metadata.

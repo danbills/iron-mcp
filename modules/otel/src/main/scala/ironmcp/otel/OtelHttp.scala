@@ -86,9 +86,9 @@ object OtelHttp:
       case "resources/read"             => params.flatMap(_.hcursor.get[String]("uri").toOption).map(Some(_))
       case _                            => Some(None)
 
-    header(McpHeaders.ProtocolVersion) match
-      case None => Some(mismatch("the MCP-Protocol-Version header is required"))
-      case Some(version) if version != supported =>
+    (header(McpHeaders.ProtocolVersion), bodyVersion) match
+      case (None, _) => Some(mismatch("the MCP-Protocol-Version header is required"))
+      case (Some(version), _) if version != supported =>
         Some(
           JsonRpcError(
             ErrorCode.UnsupportedProtocolVersion,
@@ -96,9 +96,9 @@ object OtelHttp:
             Some(Json.obj("supported" -> Json.arr(Json.fromString(supported)), "requested" -> Json.fromString(version)))
           )
         )
-      case Some(version) if bodyVersion.exists(_ != version) =>
-        Some(mismatch(s"MCP-Protocol-Version header '$version' does not match the body's '${bodyVersion.get}'"))
-      case Some(_) =>
+      case (Some(version), Some(body)) if body != version =>
+        Some(mismatch(s"MCP-Protocol-Version header '$version' does not match the body's '$body'"))
+      case (Some(_), _) =>
         header(McpHeaders.Method) match
           case None                           => Some(mismatch("the Mcp-Method header is required"))
           case Some(value) if value != method => Some(mismatch(s"Mcp-Method header '$value' does not match body method '$method'"))

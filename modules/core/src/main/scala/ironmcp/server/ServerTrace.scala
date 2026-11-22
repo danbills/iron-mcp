@@ -122,11 +122,10 @@ object TraceRenderer:
   private def toOtlpJson(trace: ServerTrace): Json =
     def otlpAttr(k: String, v: Json): Json =
       val anyVal =
-        if v.isString then Json.obj("stringValue" -> v)
-        else if v.isBoolean then Json.obj("boolValue" -> v)
-        else if v.asNumber.flatMap(_.toLong).isDefined then Json.obj("intValue" -> Json.fromString(v.asNumber.get.toLong.get.toString))
-        else if v.asNumber.isDefined then Json.obj("doubleValue" -> v)
-        else Json.obj("stringValue" -> Json.fromString(v.noSpaces))
+        v.asString.map(_ => Json.obj("stringValue" -> v))
+          .orElse(v.asBoolean.map(_ => Json.obj("boolValue" -> v)))
+          .orElse(v.asNumber.map(_.toLong.fold(Json.obj("doubleValue" -> v))(l => Json.obj("intValue" -> Json.fromString(l.toString)))))
+          .getOrElse(Json.obj("stringValue" -> Json.fromString(v.noSpaces)))
       Json.obj("key" -> Json.fromString(k), "value" -> anyVal)
 
     val otlpSpans = trace.spans.map { s =>

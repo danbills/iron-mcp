@@ -67,7 +67,7 @@ class StdioClientSuite extends CatsEffectSuite:
       client <- Resource.eval(McpClient[IO](transport))
     yield (client, fromServer)
 
-  private def idOf(line: String) = parser.parse(line).flatMap(_.hcursor.get[Long]("id")).toOption.get
+  private def idOf(line: String) = parser.parse(line).flatMap(_.hcursor.get[Long]("id")).fold(fail(s"no id in $line", _), identity)
 
   private def reply(id: Long, text: String) =
     s"""{"jsonrpc":"2.0","id":$id,"result":{"content":[{"type":"text","text":"$text"}]}}"""
@@ -104,7 +104,7 @@ class StdioClientSuite extends CatsEffectSuite:
       lines <- sent.tryTakeN(None)
     yield
       assertEquals(lines.size, 2)
-      val cancelled = parser.parse(lines(1)).toOption.get.hcursor
+      val cancelled = parser.parse(lines(1)).fold(fail("the line is not JSON", _), identity).hcursor
       assertEquals(cancelled.get[String]("method"), Right("notifications/cancelled"))
       assertEquals(cancelled.downField("params").get[Long]("requestId").toOption, Some(idOf(lines(0))))
 

@@ -41,11 +41,11 @@ class ServerTraceSuite extends CatsEffectSuite:
                ))
              )
       resp <- srv.handle(req)
-      json <- rec.render(TraceFormat.Json).map(parse(_).toOption.get)
-      perf <- rec.render(TraceFormat.Perfetto).map(parse(_).toOption.get)
-      otlp <- rec.render(TraceFormat.OtlpJson).map(parse(_).toOption.get)
+      json <- rec.render(TraceFormat.Json).flatMap(t => IO.fromEither(parse(t)))
+      perf <- rec.render(TraceFormat.Perfetto).flatMap(t => IO.fromEither(parse(t)))
+      otlp <- rec.render(TraceFormat.OtlpJson).flatMap(t => IO.fromEither(parse(t)))
     yield
-      val res = resp.collect { case JsonRpcMessage.Success(_, r) => r }.get
+      val res = resp.collect { case JsonRpcMessage.Success(_, r) => r }.getOrElse(fail(s"expected a result, got $resp"))
       assertEquals(res.hcursor.downField("_meta").downField("tracing").get[String]("traceId"), Right("0123456789abcdef0123456789abcdef"))
       assertEquals(json.hcursor.get[Int]("spanCount"), Right(1))
       assertEquals(perf.hcursor.downField("traceEvents").downN(2).get[String]("ph"), Right("X"))
@@ -114,7 +114,7 @@ class ServerTraceSuite extends CatsEffectSuite:
       c      <- rec.wrap(answering(IO.pure(Some(JsonRpcMessage.Success(RequestId.Num(1L), Json.obj())))), attachMeta = false).handle(request("ping"))
       d      <- rec.wrap(answering(IO.pure(Some(JsonRpcMessage.Failure(Some(RequestId.Num(1L)), JsonRpcError(ErrorCode.InternalError, "x", None)))))).handle(request("ping"))
     yield
-      val meta = a.collect { case JsonRpcMessage.Success(_, r) => r.hcursor.downField("_meta") }.get
+      val meta = a.collect { case JsonRpcMessage.Success(_, r) => r.hcursor.downField("_meta") }.getOrElse(fail(s"expected a result, got $a"))
       assertEquals(meta.get[String]("k"), Right("v"))
       assertEquals(meta.downField("tracing").get[String]("server"), Right("t"))
       assertEquals(b, Some(JsonRpcMessage.Success(RequestId.Num(1L), Json.fromInt(3))))
@@ -152,7 +152,10 @@ class ServerTraceSuite extends CatsEffectSuite:
     val perf = TraceRenderer.renderJson(trace, TraceFormat.Perfetto)
     val otlp = TraceRenderer.renderJson(trace, TraceFormat.OtlpJson)
     val attrs = otlp.hcursor.downField("resourceSpans").downN(0).downField("scopeSpans").downN(0).downField("spans").downN(0)
-    val values = attrs.downField("attributes").focus.flatMap(_.asArray).get.map(a => a.hcursor.get[String]("key").toOption.get -> a.hcursor.downField("value").focus.get).toMap
+    val values = attrs.downField("attributes").as[List[Json]].fold(fail("the span has no attributes", _), identity)
+      .flatMap(a => (a.hcursor.get[String]("key").toOption, a.hcursor.downField("value").focus).tupled)
+      .toMap
+    assertEquals(values.keySet, Set("s", "b", "i", "d", "o"))
     assertEquals(json.hcursor.downField("spans").downN(0).downField("status").get[String]("message"), Right("bad"))
     assertEquals(perf.hcursor.downField("traceEvents").downN(2).downField("args").get[String]("status"), Right("error(-1): bad"))
     assertEquals(perf.hcursor.downField("traceEvents").downN(2).downField("args").get[String]("parent_span_id"), Right("c" * 16))

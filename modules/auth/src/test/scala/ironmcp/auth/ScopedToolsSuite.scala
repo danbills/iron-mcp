@@ -76,8 +76,8 @@ class ScopedToolsSuite extends CatsEffectSuite:
 
   private def listed(scopes: String): IO[(List[String], String)] =
     post(scopes, "tools/list", s"""{"_meta":$meta}""", None).flatMap(_.as[String]).map { body =>
-      val result = parser.parse(body).toOption.get.hcursor.downField("result")
-      (result.downField("tools").as[List[Json]].toOption.get.flatMap(_.hcursor.get[String]("name").toOption), result.get[String]("cacheScope").toOption.get)
+      val result = parser.parse(body).fold(e => fail(e.toString), identity).hcursor.downField("result")
+      (result.downField("tools").as[List[Json]].fold(e => fail(e.toString), identity).flatMap(_.hcursor.get[String]("name").toOption), result.get[String]("cacheScope").fold(e => fail(e.toString), identity))
     }
 
   test("tools/list shows only the tools the token's scopes allow, and is private to the caller"):

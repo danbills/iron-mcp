@@ -48,12 +48,12 @@ class SamplingRootsSuite extends CatsEffectSuite:
 
   test("sampling/createMessage and roots/list input requests round-trip through Wire"):
     val sample = InputRequest.sample(CreateMessageParams(List(SamplingMessage(Role.user, ContentBlock.Text("hi"))), 10, includeContext = Some(IncludeContext.thisServer)))
-    val json   = parse(Wire.json(sample.asJson)).toOption.get
+    val json   = parse(Wire.json(sample.asJson)).fold(fail("the request is not JSON", _), identity)
     assertEquals(json.hcursor.get[String]("method"), Right("sampling/createMessage"))
     assertEquals(json.hcursor.downField("params").get[String]("includeContext"), Right("thisServer"))
     assertEquals(json.hcursor.downField("params").downField("messages").downArray.downField("content").get[String]("type"), Right("text"))
     assertEquals(json.as[InputRequest].map(_.params.as[CreateMessageParams].map(_.maxTokens)), Right(Right(10)))
-    val result = parse("""{"role":"assistant","content":{"type":"text","text":"ok"},"model":"qwen","stopReason":"endTurn"}""").toOption.get
+    val result = parse("""{"role":"assistant","content":{"type":"text","text":"ok"},"model":"qwen","stopReason":"endTurn"}""").fold(fail("the result is not JSON", _), identity)
     assertEquals(result.as[CreateMessageResult].map(_.model: String), Right("qwen"))
     assertEquals(Wire.json(InputRequest.listRoots.asJson), """{"method":"roots/list","params":{}}""")
 

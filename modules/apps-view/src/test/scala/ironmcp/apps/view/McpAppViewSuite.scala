@@ -32,7 +32,7 @@ class McpAppViewSuite extends CatsEffectSuite:
       "toolInfo": {"id": 7, "tool": {"name": "get_system_health", "inputSchema": {"type": "object"}}},
       "x-host-extra": 42
     }
-  }""").toOption.get
+  }""").fold(fail("initResult is not JSON", _), identity)
 
   private final case class Session(host: HostPort.InMemory[IO], view: McpAppView[IO], initialize: Json)
 
@@ -44,7 +44,7 @@ class McpAppViewSuite extends CatsEffectSuite:
       _ <- (for
              request <- host.fromView
              _       <- init.complete(request)
-             _       <- host.toView(Json.obj("jsonrpc" -> "2.0".asJson, "id" -> request.hcursor.downField("id").focus.get, "result" -> initResult))
+             _       <- host.toView(Json.obj("jsonrpc" -> "2.0".asJson, "id" -> request.hcursor.downField("id").focus.getOrElse(fail("the request has no id")), "result" -> initResult))
            yield ()).background
       view    <- McpAppView.connect[IO](appInfo, host.port, onTeardown = onTeardown, tools = tools)
       request <- Resource.eval(init.get)
@@ -54,7 +54,7 @@ class McpAppViewSuite extends CatsEffectSuite:
   private def notification(name: String, params: Json): Json =
     Json.obj("jsonrpc" -> "2.0".asJson, "method" -> name.asJson, "params" -> params)
   private def respond(to: Json, result: Json): Json =
-    Json.obj("jsonrpc" -> "2.0".asJson, "id" -> to.hcursor.downField("id").focus.get, "result" -> result)
+    Json.obj("jsonrpc" -> "2.0".asJson, "id" -> to.hcursor.downField("id").focus.getOrElse(fail("the request has no id")), "result" -> result)
 
   test("the handshake: ui/initialize with the app's info, then initialized"):
     session().use { s =>
@@ -146,12 +146,12 @@ class McpAppViewSuite extends CatsEffectSuite:
     session().use { s =>
       for
         _       <- s.host.fromView
-        call    <- s.view.callServerTool("missing", Json.obj("x" -> 1.asJson).asObject.get).attempt.start
+        call    <- s.view.callServerTool("missing", JsonObject("x" -> 1.asJson)).attempt.start
         request <- s.host.fromView
         _ <- s.host.toView(
                Json.obj(
                  "jsonrpc" -> "2.0".asJson,
-                 "id"      -> request.hcursor.downField("id").focus.get,
+                 "id"      -> request.hcursor.downField("id").focus.getOrElse(fail("the request has no id")),
                  "error"   -> Json.obj("code" -> (-32602).asJson, "message" -> "Unknown tool: missing".asJson)
                )
              )
@@ -271,7 +271,7 @@ class McpAppViewSuite extends CatsEffectSuite:
           yield
             val declared = s.initialize.hcursor.downField("params").downField("appCapabilities").downField("tools")
             assertEquals(declared.get[Boolean]("listChanged"), Right(true))
-            val defs = listed.hcursor.downField("result").get[List[Json]]("tools").toOption.get
+            val defs = listed.hcursor.downField("result").get[List[Json]]("tools").fold(fail("tools/list has no tools", _), identity)
             assertEquals(defs.flatMap(_.hcursor.get[String]("name").toOption), List("set-allocation", "boom"))
             val first = defs.head.hcursor
             assertEquals(first.downField("inputSchema").downField("properties").keys.map(_.toList), Some(List("categoryId", "percent")))
@@ -389,7 +389,7 @@ class McpAppViewSuite extends CatsEffectSuite:
         req    <- s.host.fromView
         _      <- s.host.toView(Json.obj(
                     "jsonrpc" -> "2.0".asJson,
-                    "id"      -> req.hcursor.downField("id").focus.get,
+                    "id"      -> req.hcursor.downField("id").focus.getOrElse(fail("the request has no id")),
                     "error"   -> Json.obj("code" -> (-32603).asJson, "message" -> "HTTP 403: Bearer error=\"insufficient_scope\", scope=\"mcp:export mcp:read\"".asJson)
                   ))
         result <- call.joinWithNever

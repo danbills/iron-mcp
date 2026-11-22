@@ -14,3 +14,6 @@ addSbtPlugin("com.github.sbt" % "sbt-pgp"    % "2.4.0")  // publishSigned
 addSbtPlugin("org.scala-js"       % "sbt-scalajs"              % "1.22.0")
 addSbtPlugin("org.portable-scala" % "sbt-scalajs-crossproject" % "1.4.0")
 addSbtPlugin("org.scoverage" % "sbt-scoverage" % "2.4.4") // coverage of coreJVM: scripts/coverage.sh
+
+// Wart.OptionPartial makes `Option.get` a compile error (build.sbt): it throws.
+addSbtPlugin("org.wartremover" % "sbt-wartremover" % "3.6.3")

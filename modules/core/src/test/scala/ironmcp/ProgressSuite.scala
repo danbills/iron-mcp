@@ -68,7 +68,7 @@ class ProgressSuite extends CatsEffectSuite:
     val meta = """{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"progressToken":7}"""
     val line = s"""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"countdown","arguments":{"steps":2},"_meta":$meta}}"""
     Stream.emit(line).covary[IO].through(Stdio.pipe(server)).compile.toList.map { out =>
-      val json = out.map(parser.parse(_).toOption.get)
+      val json = out.map(parser.parse(_).fold(fail("a line is not JSON", _), identity))
       assertEquals(json.map(_.hcursor.get[String]("method").toOption), List(Some("notifications/progress"), Some("notifications/progress"), None))
       assertEquals(json.last.hcursor.get[Int]("id"), Right(1))
       assertEquals(json.head.hcursor.downField("params").get[Int]("progressToken"), Right(7))

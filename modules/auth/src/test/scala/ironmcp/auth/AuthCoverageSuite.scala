@@ -72,7 +72,7 @@ class AuthCoverageSuite extends CatsEffectSuite:
       replay <- ReplayCache.inMemory[IO]()
       reg = ClientRegistry[IO](
         Map(
-          "sec-client" -> ClientCredential.Secret.of("correct-secret-of-at-least-32-chars").toOption.get
+          "sec-client" -> ClientCredential.Secret.of("correct-secret-of-at-least-32-chars").fold(e => fail(e.toString), identity)
         ),
         "https://idp.example",
         "https://idp.example/token",
